@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { dataDir } from './settings'
 import { pushLog } from './log'
+import { curlJson } from './net'
 
 export interface Runtime {
   node: string
@@ -123,9 +124,10 @@ export async function latestVersion(): Promise<string | null> {
 
 export async function listVersions(): Promise<string[]> {
   try {
-    const res = await fetch('https://registry.npmjs.org/@deepseek-ai/dsh')
-    if (!res.ok) return []
-    const j = (await res.json()) as { versions?: Record<string, unknown> }
+    // 用 curl（走系统证书库）绕过自定义 CA 代理的 TLS 校验失败；Accept 简化 metadata 减小体积
+    const j = (await curlJson('https://registry.npmjs.org/@deepseek-ai/dsh', {
+      Accept: 'application/vnd.npm.install-v1+json'
+    }, 60)) as { versions?: Record<string, unknown> }
     // registry 以发布顺序列出，倒序即最新在前
     return Object.keys(j.versions ?? {}).reverse()
   } catch {

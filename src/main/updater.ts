@@ -2,7 +2,7 @@
 // dsh 本体更新在 dsh-manager + 仪表盘「更新」面板完成。
 import { app } from 'electron'
 import { loadSettings } from './settings'
-import { curlJson } from './plugin-manager'
+import { curlJson } from './net'
 import type { AppUpdateInfo } from '../shared/types'
 
 export async function checkAppUpdate(): Promise<AppUpdateInfo> {

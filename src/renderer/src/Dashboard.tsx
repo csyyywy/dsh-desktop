@@ -382,6 +382,7 @@ function UpdatePanel() {
   const [appInfo, setAppInfo] = useState<AppUpdateInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [rollbackTarget, setRollbackTarget] = useState('')
 
   useEffect(() => {
     window.dsh.listVersions().then(setVersions)
@@ -431,22 +432,29 @@ function UpdatePanel() {
       <Card>
         <div className="text-sm font-medium text-slate-200">版本回滚</div>
         <p className="mt-1 text-xs text-slate-400">dsh 处于 developer preview，可能破坏兼容；可回滚到历史版本。</p>
-        <select
-          defaultValue=""
-          onChange={(e) => {
-            if (e.target.value) void window.dsh.update(e.target.value)
-          }}
-          className={`mt-3 ${inputCls}`}
-        >
-          <option value="" disabled>
-            选择历史版本…
-          </option>
-          {versions.map((v) => (
-            <option key={v} value={v}>
-              {v}
+        <div className="mt-3 flex gap-2">
+          <select
+            value={rollbackTarget}
+            onChange={(e) => setRollbackTarget(e.target.value)}
+            className={`flex-1 ${inputCls}`}
+          >
+            <option value="" disabled>
+              选择历史版本…
             </option>
-          ))}
-        </select>
+            {versions.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="danger"
+            disabled={busy || !rollbackTarget || rollbackTarget === installed}
+            onClick={() => void act(() => window.dsh.update(rollbackTarget), `已回滚到 ${rollbackTarget} ✓`)}
+          >
+            {busy ? '回滚中…' : '回滚'}
+          </Button>
+        </div>
       </Card>
       <Card>
         <div className="text-sm font-medium text-slate-200">应用外壳更新</div>
@@ -509,6 +517,7 @@ function PluginsPanel() {
   const [backups, setBackups] = useState<string[]>([])
   const [sort, setSort] = useState<'stars' | 'updated'>('stars')
   const [source, setSource] = useState<'github' | 'npm'>('github')
+  const [customSpec, setCustomSpec] = useState('')
 
   const refreshInstalled = async (): Promise<void> => {
     setInstalled(await window.dsh.listPlugins())
@@ -561,6 +570,20 @@ function PluginsPanel() {
     await refreshInstalled()
     await refreshBackups()
     await search(query)
+  }
+  const doCustomInstall = async (): Promise<void> => {
+    const spec = customSpec.trim()
+    if (!spec) return
+    // 地址（git/https）走 github 源，纯包名走 npm 源
+    const src = /^git\+|^git:\/\/|^https?:\/\//.test(spec) ? 'github' : 'npm'
+    setBusy('__custom__')
+    setMsg('')
+    const r = await window.dsh.installPlugin(spec, src)
+    setMsg(r.message)
+    setBusy(null)
+    setCustomSpec('')
+    await refreshInstalled()
+    await refreshBackups()
   }
 
   return (
@@ -618,6 +641,25 @@ function PluginsPanel() {
           {msg}
         </div>
       )}
+
+      <Card>
+        <div className="mb-1 text-sm font-medium text-slate-200">自定义安装</div>
+        <p className="mb-3 text-xs text-slate-400">粘贴 Git 仓库地址或 npm 包名，直接安装（不经过搜索）。</p>
+        <div className="flex gap-2">
+          <input
+            value={customSpec}
+            onChange={(e) => setCustomSpec(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void doCustomInstall()
+            }}
+            className={`flex-1 ${inputCls}`}
+            placeholder="如 https://github.com/user/plugin 或 @scope/plugin"
+          />
+          <Button disabled={busy === '__custom__' || !customSpec.trim()} onClick={() => void doCustomInstall()}>
+            {busy === '__custom__' ? '安装中…' : '安装'}
+          </Button>
+        </div>
+      </Card>
 
       <Card>
         <div className="mb-3 text-sm font-medium text-slate-200">已安装（{installed.length}）</div>

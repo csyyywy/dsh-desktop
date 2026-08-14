@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { resolveRuntime } from './dsh-manager'
 import { dataDir, dshHome, loadSettings } from './settings'
 import { pushLog } from './log'
+import { curlJson } from './net'
 import type { PluginInfo, PluginOpResult } from '../shared/types'
 
 const PROFILE = 'web'
@@ -19,37 +20,6 @@ function pnpmCjsPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'pnpm', 'bin', 'pnpm.cjs')
     : join(app.getAppPath(), 'resources', 'pnpm', 'bin', 'pnpm.cjs')
-}
-
-/**
- * 用系统 curl 请求 JSON（走 Windows 系统证书库与系统代理）。
- * Node 的 fetch/https 用内置 Mozilla CA，遇到带自定义 CA 的代理会 TLS 校验失败。
- */
-export function curlJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const args = ['-sS', '-L', '--max-time', '25']
-    for (const [k, v] of Object.entries(headers)) {
-      if (v) args.push('-H', `${k}: ${v}`)
-    }
-    args.push(url)
-    const child = spawn('curl', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = ''
-    let err = ''
-    child.stdout.on('data', (b) => (out += b.toString()))
-    child.stderr.on('data', (b) => (err += b.toString()))
-    child.on('error', (e) => reject(e))
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(err.trim() || `curl exit ${code}`))
-        return
-      }
-      try {
-        resolve(JSON.parse(out))
-      } catch (e) {
-        reject(e as Error)
-      }
-    })
-  })
 }
 
 function runPnpm(args: string[]): Promise<{ code: number; output: string }> {
@@ -346,9 +316,17 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
     pnpmSpec = spec
     npmName = spec
   } else {
-    pnpmSpec = /^git\+|^https?:\/\//.test(spec) ? spec : `git+https://github.com/${spec}`
+    // 从 git 地址或仓库名提取 owner/repo，规范化安装地址
+    const repo = /github\.com[/:]([^/]+\/[^/#?]+)/.exec(spec)?.[1]?.replace(/\.git$/, '') ?? spec
+    pnpmSpec = /^git\+/.test(spec)
+      ? spec
+      : /^https?:\/\/github\.com\//.test(spec)
+        ? `git+${spec}`
+        : /^(https?|git):\/\//.test(spec)
+          ? spec
+          : `git+https://github.com/${repo}`
     // 预取 npm 包名，精准放行其构建脚本（pnpm 默认拦截 git 依赖的 prepare 脚本）
-    npmName = await fetchRepoNpmName(spec)
+    npmName = await fetchRepoNpmName(repo)
     if (npmName) allowBuild(npmName)
   }
   const { code, output } = await runPnpm(['add', pnpmSpec])
