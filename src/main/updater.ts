@@ -2,6 +2,7 @@
 // dsh 本体更新在 dsh-manager + 仪表盘「更新」面板完成。
 import { app } from 'electron'
 import { loadSettings } from './settings'
+import { curlJson } from './plugin-manager'
 import type { AppUpdateInfo } from '../shared/types'
 
 export async function checkAppUpdate(): Promise<AppUpdateInfo> {
@@ -11,11 +12,10 @@ export async function checkAppUpdate(): Promise<AppUpdateInfo> {
     return { enabled: false, current, latest: null, hasUpdate: false, url: null }
   }
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`)
-    if (!res.ok) {
-      return { enabled: true, current, latest: null, hasUpdate: false, url: null }
-    }
-    const j = (await res.json()) as { tag_name?: string; html_url?: string }
+    const j = (await curlJson(`https://api.github.com/repos/${repo}/releases/latest`, {
+      'User-Agent': 'dsh-desktop',
+      Accept: 'application/vnd.github+json'
+    })) as { tag_name?: string; html_url?: string }
     const latest = (j.tag_name ?? '').replace(/^v/i, '') || null
     return {
       enabled: true,

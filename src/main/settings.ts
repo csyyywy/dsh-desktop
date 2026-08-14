@@ -10,7 +10,7 @@ const DEFAULTS: AppSettings = {
   apiKey: '',
   launchOnLogin: false,
   theme: 'dark',
-  appUpdateRepo: '',
+  appUpdateRepo: 'csyyywy/dsh-desktop',
   background: 'radial-gradient(140% 140% at 10% -10%, #1b2547 0%, #0b1020 55%, #0a0d18 100%)',
   githubToken: ''
 }
