@@ -1,0 +1,45 @@
+appId: com.dsh.desktop
+productName: DeepSeek Harness
+copyright: MIT
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - out/**
+  - resources/icons/**
+
+extraResources:
+  - from: resources
+    to: .
+    filter:
+      - "node/**/*"
+      - "icons/**/*"
+      - "pnpm/**/*"
+      - "dsh-bundle/**/*"
+
+asar: true
+
+win:
+  icon: resources/icons/icon.png
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DeepSeek Harness
+  artifactName: ${productName}-${version}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+# 应用自更新走 GitHub Releases；如需启用，将下方 publish 解开并指向你的仓库
+# publish:
+#   provider: github
+#   owner: your-org
+#   repo: dsh-desktop

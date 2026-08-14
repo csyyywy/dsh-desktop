@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-300: #8ea0ff;
+  --color-brand-400: #6d82fe;
+  --color-brand-500: #4d6bfe;
+  --color-brand-600: #3a53e0;
+  --color-brand-700: #2c40b8;
+  --color-ink-950: #070b16;
+  --color-ink-900: #0b1020;
+  --color-ink-850: #0e1428;
+  --color-ink-800: #121a30;
+  --color-ink-700: #1a2440;
+  --color-ink-600: #26314f;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: #e6e9f2;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* splash 圆角卡片（透明 frameless 窗口） */
+.splash-card {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* —— 科幻启动屏特效 —— */
+@keyframes dsh-scan {
+  0% {
+    top: -2%;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    top: 102%;
+    opacity: 0;
+  }
+}
+@keyframes dsh-glow {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.2);
+  }
+}
+@keyframes dsh-grid {
+  0% {
+    background-position: 0 0, 0 0;
+  }
+  100% {
+    background-position: 0 36px, 0 36px;
+  }
+}
+@keyframes dsh-float {
+  0% {
+    transform: translateY(0) translateX(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.7;
+  }
+  85% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateY(-90px) translateX(18px);
+    opacity: 0;
+  }
+}
+@keyframes dsh-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+@keyframes dsh-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

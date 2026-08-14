@@ -1,0 +1,29 @@
+import { ipcMain } from 'electron'
+import type { Controller } from './controller'
+
+export function registerIpc(controller: Controller): void {
+  ipcMain.handle('status:get', () => controller.getStatus())
+  ipcMain.handle('server:start', () => controller.start())
+  ipcMain.handle('server:stop', () => controller.stop())
+  ipcMain.handle('server:restart', () => controller.restart())
+  ipcMain.handle('dsh:install', () => controller.install())
+  ipcMain.handle('dsh:update', (_e, version?: string) => controller.update(version))
+  ipcMain.handle('dsh:versions', () => controller.listVersions())
+  ipcMain.handle('settings:get', () => controller.getSettings())
+  ipcMain.handle('settings:set', (_e, patch) => controller.setSettings(patch))
+  ipcMain.handle('logs:get', () => controller.getLogs())
+  ipcMain.handle('app:openWebUI', () => controller.openWebUI())
+  ipcMain.handle('app:openDashboard', () => controller.openDashboard())
+  ipcMain.handle('app:openDshHome', () => controller.openDshHome())
+  ipcMain.handle('app:openPluginsDir', () => controller.openPluginsDir())
+  ipcMain.handle('app:checkUpdate', () => controller.checkAppUpdate())
+  ipcMain.handle('plugins:list', () => controller.listPlugins())
+  ipcMain.handle('plugins:search', (_e, query: string, sort?: string, source?: string) => controller.searchPlugins(query, sort, source))
+  ipcMain.handle('plugins:install', (_e, name: string, source?: string) => controller.installPlugin(name, source))
+  ipcMain.handle('plugins:uninstall', (_e, name: string) => controller.uninstallPlugin(name))
+  ipcMain.handle('app:pickBackgroundImage', () => controller.pickBackgroundImage())
+  ipcMain.handle('app:openExternal', (_e, url: string) => controller.openExternal(url))
+  ipcMain.handle('plugins:backups', () => controller.listBackups())
+  ipcMain.handle('plugins:restoreBackup', (_e, name: string) => controller.restoreBackup(name))
+  ipcMain.handle('app:quit', () => controller.quit())
+}

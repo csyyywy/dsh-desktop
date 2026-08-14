@@ -1,0 +1,46 @@
+{
+  "name": "dsh-desktop",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 桌面封装 —— 本地一键安装 / 启动 / 更新 dsh 的客户端外壳",
+  "author": "dsh-desktop",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/csyyywy/dsh-desktop.git"
+  },
+  "homepage": "https://github.com/csyyywy/dsh-desktop#readme",
+  "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "predev": "npm run icon",
+    "prebuild": "npm run icon",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "icon": "node scripts/make-icon.mjs",
+    "node:download": "node scripts/download-node.mjs",
+    "pnpm:download": "node scripts/download-pnpm.mjs",
+    "dsh:bundle": "node scripts/bundle-dsh.mjs",
+    "pack:dir": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --dir",
+    "pack:win": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --win"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sharp": "^0.35.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.0.0"
+  }
+}

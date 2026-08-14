@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+data/
+resources/node/
+resources/pnpm/
+resources/dsh-bundle/
+resources/icons/*.png
+*.log
+.DS_Store
