@@ -23,6 +23,7 @@
     "node:download": "node scripts/download-node.mjs",
     "pnpm:download": "node scripts/download-pnpm.mjs",
     "dsh:bundle": "node scripts/bundle-dsh.mjs",
+    "electron:restore": "node scripts/restore-electron.mjs",
     "pack:dir": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --dir",
     "pack:win": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --win"
   },
