@@ -8,3 +8,4 @@ resources/dsh-bundle/
 resources/icons/*.png
 *.log
 .DS_Store
+.tmp-*
