@@ -6,7 +6,7 @@ import type { AppSettings, AppStatus, InstallProgress, ServerPhase } from '../sh
 import type { Controller } from './controller'
 import { loadSettings, saveSettings, dshHome } from './settings'
 import { pushLog, getLogs, onLog } from './log'
-import { hasBundledDsh, installDsh, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh } from './dsh-manager'
+import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning } from './server'
 import { checkAppUpdate } from './updater'
 import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin } from './plugin-manager'
@@ -195,12 +195,11 @@ async function doInstall(targetVersion: string): Promise<void> {
 }
 
 async function ensureInstalled(): Promise<void> {
-  if (isInstalled()) return
+  if (isComplete()) return
   if (hasBundledDsh()) {
     broadcastProgress({ phase: 'installing', message: '正在恢复内置 DeepSeek Harness …' })
     broadcastStatus()
-    restoreBundledDsh()
-    if (isInstalled()) return
+    if (restoreBundledDsh()) return
   }
   await doInstall(loadSettings().dshVersion || 'latest')
 }

@@ -2,7 +2,7 @@
 // 只通过 npm 安装官方 @deepseek-ai/dsh，绝不改其源码。
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { dataDir } from './settings'
 import { pushLog } from './log'
@@ -43,6 +43,18 @@ export function isInstalled(): boolean {
   return existsSync(dshBin())
 }
 
+/** dsh 依赖树的哨兵包：任一缺失即视为安装不完整（防止 cpSync 部分复制被误判为已安装） */
+const REQUIRED_PKGS = ['zod', 'yaml', 'sharp', 'typebox']
+
+export function isComplete(): boolean {
+  if (!isInstalled()) return false
+  const nm = join(dataDir(), 'node_modules')
+  for (const pkg of REQUIRED_PKGS) {
+    if (!existsSync(join(nm, pkg, 'package.json'))) return false
+  }
+  return true
+}
+
 function bundledDshDir(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'dsh-bundle')
@@ -55,11 +67,13 @@ export function hasBundledDsh(): boolean {
 
 /** 从内置 bundle 复制到 data/，避免首次联网安装；无 bundle 或失败返回 false */
 export function restoreBundledDsh(): boolean {
-  if (isInstalled()) return true
+  if (isComplete()) return true
   if (!hasBundledDsh()) return false
   const src = bundledDshDir()
   const dest = dataDir()
   mkdirSync(dest, { recursive: true })
+  // 先清理不完整/残留的 node_modules，避免旧数据干扰复制与校验
+  rmSync(join(dest, 'node_modules'), { recursive: true, force: true })
   try {
     for (const entry of ['node_modules', 'package.json', 'package-lock.json']) {
       const s = join(src, entry)
@@ -67,9 +81,16 @@ export function restoreBundledDsh(): boolean {
     }
   } catch (e) {
     pushLog('恢复内置 dsh 失败: ' + (e as Error).message)
+    rmSync(join(dest, 'node_modules'), { recursive: true, force: true })
     return false
   }
-  return isInstalled()
+  // 完整性校验：cpSync 可能因长路径/文件占用而部分复制，缺依赖却仍留下 bin.js
+  if (!isComplete()) {
+    pushLog('恢复内置 dsh 不完整，清理后改用在线安装')
+    rmSync(join(dest, 'node_modules'), { recursive: true, force: true })
+    return false
+  }
+  return true
 }
 
 export function installedVersion(): string | null {

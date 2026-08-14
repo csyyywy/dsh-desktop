@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 桌面封装 —— 本地一键安装 / 启动 / 更新 dsh 的客户端外壳",
   "author": "dsh-desktop",
   "license": "MIT",
