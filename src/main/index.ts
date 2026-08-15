@@ -3,7 +3,7 @@ import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, PluginOpResult, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
@@ -564,14 +564,39 @@ async function syncFromWindows(emit?: (msg: string) => void, allowUac = false): 
   const gh = await ensureWslGithubAccess(d, allowUac)
   if (!gh.ok) {
     pushLog('同步: GitHub 不可达 - ' + gh.message)
-    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建跳过（${gh.message}）。服务可直接启动，稍后可在「从本机同步」时授权打通 GitHub 后重试` }
+    await degradeToPureProfile(d)
+    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建跳过（${gh.message}）。WSL 服务以纯净模式启动，稍后可在「从本机同步」时授权打通 GitHub 后重试` }
   }
   const r = await runPnpm(['install'])
   if (r.code !== 0) {
     const last = r.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
-    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建失败（${last || 'exit ' + r.code}）。服务可直接启动，稍后可手动重试同步` }
+    await degradeToPureProfile(d)
+    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建失败（${last || 'exit ' + r.code}）。WSL 服务以纯净模式启动，稍后可手动重试同步` }
   }
   return { ok: true, message: `已从本机同步插件/预设/会话到 WSL（${copied} 项，依赖已重建）` }
+}
+
+/**
+ * 插件依赖重建失败时，把 WSL profile 的 package.json 降级为纯净模式
+ * （备份原声明到 package.json.syncbak，清空依赖与 bundles）——否则 dsh 启动时
+ * 解析缺失的 bundle 直接崩溃（cannot resolve profile bundle），服务起不来。
+ * 手动同步成功（pnpm install 重写 package.json 依赖）后自动恢复插件。
+ */
+async function degradeToPureProfile(d: string): Promise<void> {
+  const wslHomeL = wslDshHomeLinux()
+  const profileL = wslHomeL ? `${wslHomeL}/profiles/web` : null
+  if (!profileL) return
+  const pkgPath = toUnc(d, `${profileL}/package.json`)
+  try {
+    if (existsSync(pkgPath)) {
+      const bak = toUnc(d, `${profileL}/package.json.syncbak`)
+      if (!existsSync(bak)) copyFileSync(pkgPath, bak)
+    }
+    writeFileSync(pkgPath, JSON.stringify({ name: 'web', private: true }, null, 2) + '\n', 'utf8')
+    pushLog('同步: 插件依赖重建失败，WSL profile 已降级为纯净模式（原声明备份为 package.json.syncbak）')
+  } catch (e) {
+    pushLog('同步: 纯净模式降级失败: ' + (e as Error).message)
+  }
 }
 
 async function backendDiagnose(): Promise<string[]> {

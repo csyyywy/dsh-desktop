@@ -49,43 +49,57 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean = isRunning, verifyDsh = false): Promise<void> {
+// WSL 后端存活检查：不仅看 wslRunning 缓存，还要实时确认 dsh 进程存活
+// （pidAlive），进程崩溃时立即失败，避免探测傻等 120s（用户实测卡启动问题）
+let wslPidCache: number | null = null
+
+async function wslAliveCheck(): Promise<boolean> {
+  if (!wslRunning) return false
+  if (wslPidCache == null) return true
+  return pidAlive(wslPidCache)
+}
+
+function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean | Promise<boolean> = isRunning, verifyDsh = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now()
     const tick = (): void => {
-      if (!alive()) {
-        reject(new Error('dsh 进程已退出，详见日志'))
-        return
-      }
-      const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2500 }, (res) => {
-        if (!verifyDsh) {
-          res.resume()
-          resolve()
-          return
-        }
-        // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）
-        let body = ''
-        res.on('data', (b: Buffer) => {
-          body += b.toString()
-          if (body.length > 65536) req.destroy()
-        })
-        res.on('end', () => {
-          if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) resolve()
-          else setTimeout(tick, 500)
-        })
-      })
-      req.on('timeout', () => req.destroy())
-      req.on('error', () => {
-        if (!alive()) {
+      void (async () => {
+        if (!(await alive())) {
           reject(new Error('dsh 进程已退出，详见日志'))
           return
         }
-        if (Date.now() - start > timeoutMs) {
-          reject(new Error('等待 dsh 服务启动超时'))
-          return
-        }
-        setTimeout(tick, 500)
-      })
+        const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2500 }, (res) => {
+          if (!verifyDsh) {
+            res.resume()
+            resolve()
+            return
+          }
+          // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）
+          let body = ''
+          res.on('data', (b: Buffer) => {
+            body += b.toString()
+            if (body.length > 65536) req.destroy()
+          })
+          res.on('end', () => {
+            if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) resolve()
+            else setTimeout(tick, 500)
+          })
+        })
+        req.on('timeout', () => req.destroy())
+        req.on('error', () => {
+          void (async () => {
+            if (!(await alive())) {
+              reject(new Error('dsh 进程已退出，详见日志'))
+              return
+            }
+            if (Date.now() - start > timeoutMs) {
+              reject(new Error('等待 dsh 服务启动超时'))
+              return
+            }
+            setTimeout(tick, 500)
+          })()
+        })
+      })()
     }
     tick()
   })
@@ -153,10 +167,13 @@ async function startWslServer(): Promise<void> {
   wslStalePid = null
   lastExit = null
   try {
-    // verifyDsh：探测响应必须是 dsh 页面（防 Windows 侧同端口服务误判）
-    await waitForPort(port, 120000, () => wslRunning, true)
+    // 启动后从 pidfile 取 pid，供存活检查（进程崩溃立即失败，不等 120s 超时）
+    const info = await readPidfile(pidfile)
+    wslPidCache = info.pid
+    await waitForPort(port, 120000, wslAliveCheck, true)
   } catch (e) {
     wslRunning = false
+    wslPidCache = null
     throw e
   }
 }
@@ -187,6 +204,7 @@ async function stopWslServer(): Promise<void> {
     wslStalePid = null
   }
   wslRunning = false
+  wslPidCache = null
 }
 
 /** 强制清理残留进程（UI「强制清理」按钮） */
