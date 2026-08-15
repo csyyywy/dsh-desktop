@@ -14,6 +14,7 @@ extraResources:
     to: .
     filter:
       - "node/**/*"
+      - "node-linux.tar.xz"
       - "icons/**/*"
       - "pnpm/**/*"
       - "dsh-bundle/**/*"

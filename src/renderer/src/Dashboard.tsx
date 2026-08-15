@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo } from '../../shared/types'
 import { useLogs, useStatus, useSettings, updateSettings } from './hooks'
+import BackendPanel from './BackendPanel'
+import FileBridgePanel from './FileBridgePanel'
 
-type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins'
+type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins' | 'backend' | 'files'
 type Phase = AppStatus['phase']
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'status', label: '状态' },
   { id: 'settings', label: '设置' },
+  { id: 'backend', label: '运行后端' },
+  { id: 'files', label: '文件桥' },
   { id: 'update', label: '更新' },
   { id: 'logs', label: '日志' },
   { id: 'plugins', label: '插件' }
@@ -91,6 +95,8 @@ export default function Dashboard() {
       <main className="flex-1 overflow-y-auto p-6">
         {tab === 'status' && <StatusPanel />}
         {tab === 'settings' && <SettingsPanel />}
+        {tab === 'backend' && <BackendPanel />}
+        {tab === 'files' && <FileBridgePanel />}
         {tab === 'update' && <UpdatePanel />}
         {tab === 'logs' && <LogsPanel />}
         {tab === 'plugins' && <PluginsPanel />}
@@ -200,6 +206,11 @@ function StatusPanel() {
           <span className="text-sm text-slate-400">
             {status ? `端口 ${status.port} · ${status.nodeLabel === 'bundled' ? '内置 Node' : '系统 Node'}` : ''}
           </span>
+          {status?.backend === 'wsl' && (
+            <span className="rounded-full border border-brand-500/40 bg-brand-500/10 px-2 py-0.5 text-xs text-brand-300">
+              WSL · {status.wslDistro ?? '?'}
+            </span>
+          )}
         </div>
         <div className="mt-4 flex flex-wrap gap-3">
           {status?.running ? (

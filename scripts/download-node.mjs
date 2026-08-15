@@ -9,6 +9,9 @@ const NODE_VERSION = 'v22.21.1'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const destDir = join(root, 'resources', 'node')
 const nodeExe = join(destDir, 'node.exe')
+// WSL 后端（v0.2.0）：Linux x64 tar.xz 原样存放（不提前解压），
+// 部署时由发行版内 tar 解压以保留可执行权限位。
+const linuxTar = join(root, 'resources', 'node-linux.tar.xz')
 
 // 允许用环境变量覆盖版本/镜像
 const version = process.env.DSH_NODE_VERSION || NODE_VERSION
@@ -33,29 +36,43 @@ function extractZip(zipPath, outDir) {
 async function main() {
   if (existsSync(nodeExe)) {
     console.log('[download-node] 已存在，跳过：', nodeExe)
-    return
+  } else {
+    const url = `${baseUrl}/node-${version}-win-x64.zip`
+    console.log('[download-node] 下载：', url)
+    const res = await fetch(url, { redirect: 'follow' })
+    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+
+    mkdirSync(destDir, { recursive: true })
+    const zipPath = join(destDir, 'node.zip')
+    const tmpDir = join(destDir, '.extract')
+    writeFileSync(zipPath, buf)
+
+    mkdirSync(tmpDir, { recursive: true })
+    extractZip(zipPath, tmpDir)
+
+    const inner = join(tmpDir, `node-${version}-win-x64`)
+    for (const f of readdirSync(inner)) {
+      renameSync(join(inner, f), join(destDir, f))
+    }
+    rmSync(tmpDir, { recursive: true, force: true })
+    rmSync(zipPath, { force: true })
+    console.log('[download-node] 完成：', destDir)
   }
-  const url = `${baseUrl}/node-${version}-win-x64.zip`
-  console.log('[download-node] 下载：', url)
-  const res = await fetch(url, { redirect: 'follow' })
-  if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`)
-  const buf = Buffer.from(await res.arrayBuffer())
 
-  mkdirSync(destDir, { recursive: true })
-  const zipPath = join(destDir, 'node.zip')
-  const tmpDir = join(destDir, '.extract')
-  writeFileSync(zipPath, buf)
-
-  mkdirSync(tmpDir, { recursive: true })
-  extractZip(zipPath, tmpDir)
-
-  const inner = join(tmpDir, `node-${version}-win-x64`)
-  for (const f of readdirSync(inner)) {
-    renameSync(join(inner, f), join(destDir, f))
+  // Linux x64（WSL 后端）：tar.xz 原样存 resources/node-linux.tar.xz
+  if (process.env.DSH_SKIP_NODE_LINUX === '1') {
+    console.log('[download-node] DSH_SKIP_NODE_LINUX=1，跳过 Linux 版')
+  } else if (existsSync(linuxTar)) {
+    console.log('[download-node] Linux 版已存在，跳过：', linuxTar)
+  } else {
+    const url = `${baseUrl}/node-${version}-linux-x64.tar.xz`
+    console.log('[download-node] 下载 Linux 版（WSL 后端）：', url)
+    const res = await fetch(url, { redirect: 'follow' })
+    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`)
+    writeFileSync(linuxTar, Buffer.from(await res.arrayBuffer()))
+    console.log('[download-node] 完成：', linuxTar)
   }
-  rmSync(tmpDir, { recursive: true, force: true })
-  rmSync(zipPath, { force: true })
-  console.log('[download-node] 完成：', destDir)
 }
 
 main().catch((e) => {

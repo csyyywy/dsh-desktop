@@ -3,6 +3,7 @@ out/
 dist/
 data/
 resources/node/
+resources/node-linux.tar.xz
 resources/pnpm/
 resources/dsh-bundle/
 resources/icons/*.png
