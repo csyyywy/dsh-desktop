@@ -134,7 +134,9 @@ function createMain(): BrowserWindow {
 }
 
 function openMain(): void {
-  if (!isRunning()) {
+  // WSL 模式没有本机 proc 句柄，isRunning() 恒 false——必须同时看 wslIsRunning()，
+  // 否则启动成功后这里会误判"未运行"而递归 startDsh（被互斥锁挡住）→ 主窗口不弹出
+  if (!isRunning() && !wslIsRunning()) {
     void startDsh()
     return
   }
