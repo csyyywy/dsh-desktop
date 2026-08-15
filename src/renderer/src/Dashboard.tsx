@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AppSettings, AppStatus, AppUpdateInfo, PluginInfo } from '../../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo } from '../../shared/types'
 import { useLogs, useStatus, useSettings, updateSettings } from './hooks'
 
 type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins'
@@ -17,6 +17,12 @@ const inputCls =
   'w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-brand-500'
 
 const FALLBACK_BG = 'radial-gradient(140% 140% at 10% -10%, #1b2547 0%, #0b1020 55%, #0a0d18 100%)'
+
+function fmtSize(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${n} B`
+}
 
 const BG_PRESETS: { name: string; value: string }[] = [
   { name: '深空蓝', value: FALLBACK_BG },
@@ -383,11 +389,58 @@ function UpdatePanel() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [rollbackTarget, setRollbackTarget] = useState('')
+  // 应用外壳更新
+  const [dlState, setDlState] = useState<'idle' | 'downloading' | 'downloaded'>('idle')
+  const [dlProgress, setDlProgress] = useState<AppUpdateProgress | null>(null)
+  const [appMsg, setAppMsg] = useState('')
+  const [appMsgOk, setAppMsgOk] = useState(true)
 
   useEffect(() => {
     window.dsh.listVersions().then(setVersions)
     window.dsh.checkAppUpdate().then(setAppInfo)
   }, [])
+
+  useEffect(() => {
+    return window.dsh.onAppUpdateProgress((p) => {
+      setDlProgress(p)
+      if (p.phase === 'done') {
+        setDlState('downloaded')
+        setAppMsg('下载完成，点击「立即安装并重启」')
+        setAppMsgOk(true)
+      } else if (p.phase === 'error') {
+        setDlState('idle')
+        setAppMsg(p.message)
+        setAppMsgOk(false)
+      }
+    })
+  }, [])
+
+  const startAppDownload = async (): Promise<void> => {
+    setDlState('downloading')
+    setDlProgress(null)
+    setAppMsg('')
+    const r = await window.dsh.downloadAppUpdate()
+    if (!r.ok) {
+      setDlState('idle')
+      setAppMsg(r.message)
+      setAppMsgOk(false)
+    } else {
+      setDlState('downloaded')
+      setAppMsg(r.message)
+      setAppMsgOk(true)
+    }
+  }
+
+  const installAppNow = async (): Promise<void> => {
+    try {
+      const r = await window.dsh.installAppUpdate()
+      setAppMsg(r.message)
+      setAppMsgOk(r.ok)
+    } catch (e) {
+      setAppMsg((e as Error).message)
+      setAppMsgOk(false)
+    }
+  }
 
   const installed = status?.installedVersion ?? null
   const latest = status?.latestVersion ?? null
@@ -458,15 +511,53 @@ function UpdatePanel() {
       </Card>
       <Card>
         <div className="text-sm font-medium text-slate-200">应用外壳更新</div>
-        <div className="mt-1 text-sm text-slate-400">当前外壳版本：{status?.appVersion ?? '—'}</div>
+        <div className="mt-1 text-sm text-slate-400">
+          当前外壳版本：{status?.appVersion ?? '—'}
+          {appInfo?.enabled && appInfo.latest && ` · 最新版本：v${appInfo.latest}`}
+        </div>
         {appInfo?.enabled ? (
           appInfo.hasUpdate ? (
-            <button
-              onClick={() => void window.dsh.openExternal(appInfo.url ?? '')}
-              className="mt-2 inline-block text-sm text-brand-300 hover:underline"
-            >
-              发现新版本 {appInfo.latest}，前往下载
-            </button>
+            <div className="mt-3 space-y-3">
+              <div className="flex items-center gap-3">
+                <Button
+                  disabled={dlState === 'downloading'}
+                  onClick={() => void startAppDownload()}
+                >
+                  {dlState === 'downloading'
+                    ? '下载中…'
+                    : dlState === 'downloaded'
+                      ? '已下载'
+                      : `下载并安装 v${appInfo.latest}`}
+                </Button>
+                {dlState === 'downloaded' && (
+                  <Button variant="ghost" onClick={() => void installAppNow()}>
+                    立即安装并重启
+                  </Button>
+                )}
+                <button
+                  onClick={() => void window.dsh.openExternal(appInfo.url ?? '')}
+                  className="text-xs text-slate-500 transition hover:text-slate-300 hover:underline"
+                >
+                  手动下载
+                </button>
+              </div>
+              {dlState === 'downloading' && dlProgress && (
+                <div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-brand-400 transition-all duration-300"
+                      style={{ width: `${dlProgress.percent}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {dlProgress.message}
+                    {dlProgress.totalBytes > 0 &&
+                      `（${fmtSize(dlProgress.receivedBytes)} / ${fmtSize(dlProgress.totalBytes)}）`}
+                  </div>
+                </div>
+              )}
+              {appMsg && <p className={`text-sm ${appMsgOk ? 'text-emerald-400' : 'text-rose-400'}`}>{appMsg}</p>}
+            </div>
           ) : (
             <p className="mt-2 text-sm text-slate-400">外壳已是最新</p>
           )

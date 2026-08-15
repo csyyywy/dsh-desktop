@@ -39,8 +39,10 @@ nsis:
 portable:
   artifactName: ${productName}-${version}-portable.${ext}
 
-# 应用自更新走 GitHub Releases；如需启用，将下方 publish 解开并指向你的仓库
-# publish:
-#   provider: github
-#   owner: your-org
-#   repo: dsh-desktop
+# 应用自更新走 GitHub Releases：构建时生成 latest.yml / app-update.yml（升级信息），
+# 发布时把 latest.yml 一并传上 Release；应用内更新面板直接调 GitHub API + curl 下载安装包。
+# 注意：不传 --publish 时不会真的上传，仅本地生成升级信息文件。
+publish:
+  provider: github
+  owner: csyyywy
+  repo: dsh-desktop

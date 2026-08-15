@@ -68,6 +68,26 @@ export interface AppUpdateInfo {
   latest: string | null
   hasUpdate: boolean
   url: string | null
+  /** 最新版 NSIS 安装包（setup.exe）的下载直链（GitHub release 资产） */
+  assetUrl: string | null
+  /** 安装包大小（字节） */
+  assetSize: number | null
+}
+
+/** 应用自更新（下载安装包）的结果 */
+export interface AppUpdateResult {
+  ok: boolean
+  message: string
+}
+
+/** 应用自更新下载进度（主进程 → 渲染层推送） */
+export interface AppUpdateProgress {
+  phase: 'downloading' | 'verifying' | 'done' | 'error'
+  /** 0-100 */
+  percent: number
+  receivedBytes: number
+  totalBytes: number
+  message: string
 }
 
 /** preload 暴露给渲染层（window.dsh）的 API 形状 */
@@ -87,6 +107,9 @@ export interface DshApi {
   openDshHome(): Promise<void>
   openPluginsDir(): Promise<void>
   checkAppUpdate(): Promise<AppUpdateInfo>
+  downloadAppUpdate(): Promise<AppUpdateResult>
+  installAppUpdate(): Promise<AppUpdateResult>
+  onAppUpdateProgress(cb: (p: AppUpdateProgress) => void): () => void
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>

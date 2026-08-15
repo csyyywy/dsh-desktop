@@ -1,14 +1,15 @@
 // 应用入口：窗口/托盘/生命周期编排 + 启动流程
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
-import type { AppSettings, AppStatus, InstallProgress, ServerPhase } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateProgress, InstallProgress, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
 import { loadSettings, saveSettings, dshHome } from './settings'
 import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning } from './server'
-import { checkAppUpdate } from './updater'
+import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
 import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin } from './plugin-manager'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
@@ -184,6 +185,10 @@ function broadcastProgress(p: InstallProgress): void {
   for (const w of notifyWindows()) w.webContents.send('install:progress', p)
 }
 
+function broadcastAppUpdateProgress(p: AppUpdateProgress): void {
+  for (const w of notifyWindows()) w.webContents.send('app:updateProgress', p)
+}
+
 // ---------- 服务 / 安装编排 ----------
 function onServerExit(code: number | null): void {
   if (quitting) return
@@ -326,6 +331,29 @@ const controller: Controller = {
     await shell.openPath(target)
   },
   checkAppUpdate,
+  downloadAppUpdate: () => downloadAppUpdateFile((p) => broadcastAppUpdateProgress(p)),
+  installAppUpdate: () => {
+    const installer = downloadedUpdatePath()
+    if (!installer) {
+      return { ok: false, message: '没有已下载的更新包，请先下载' }
+    }
+    pushLog(`应用自更新：启动安装器 ${installer}`)
+    try {
+      // detached + unref：安装器独立于本进程运行，应用退出后继续安装
+      const child = spawn(installer, ['/S', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true })
+      child.unref()
+      child.on('error', (e) => pushLog('应用自更新：启动安装器失败 ' + e.message))
+    } catch (e) {
+      return { ok: false, message: `无法启动安装器：${(e as Error).message}` }
+    }
+    // 安装器已接管：先正常退出本进程（before-quit 会停掉 dsh 服务），
+    // NSIS 模板会等待旧进程退出后替换文件，完成后 --force-run 自动拉起新版本
+    setTimeout(() => {
+      quitting = true
+      app.quit()
+    }, 1000)
+    return { ok: true, message: '正在安装更新，应用将自动重启…' }
+  },
   listPlugins: () => listInstalledPlugins(),
   searchPlugins: (query, sort, source) => searchPlugins(query, sort, source),
   installPlugin: async (name, source) => {

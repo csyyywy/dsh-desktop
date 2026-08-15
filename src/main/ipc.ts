@@ -17,6 +17,8 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('app:openDshHome', () => controller.openDshHome())
   ipcMain.handle('app:openPluginsDir', () => controller.openPluginsDir())
   ipcMain.handle('app:checkUpdate', () => controller.checkAppUpdate())
+  ipcMain.handle('app:downloadUpdate', () => controller.downloadAppUpdate())
+  ipcMain.handle('app:installUpdate', () => controller.installAppUpdate())
   ipcMain.handle('plugins:list', () => controller.listPlugins())
   ipcMain.handle('plugins:search', (_e, query: string, sort?: string, source?: string) => controller.searchPlugins(query, sort, source))
   ipcMain.handle('plugins:install', (_e, name: string, source?: string) => controller.installPlugin(name, source))

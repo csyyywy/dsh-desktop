@@ -2,7 +2,7 @@
 
 > 本文档供接续开发者 / agent 接手 **dsh-desktop** 项目使用。
 > 记录了项目现状、本机环境、关键机制与踩过的坑。
-> 最后更新：2026-08-15（v0.1.3 发布后）。
+> 最后更新：2026-08-15（v0.1.4 开发中：应用自更新落地）。
 
 ---
 
@@ -59,9 +59,11 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 | `3e97936` | git 安装无 package.json 的仓库（占位包）时明确报错 |
 
 **待办 / 已知缺口**：
-- 应用自更新面板存在，但 electron-builder `publish` 配置仍注释掉（app-update.yml 由 package.json repository 生成）。当前靠手动下载新 setup 更新。
+- ~~应用自更新~~：v0.1.4 起已实现「面板内下载 setup.exe → NSIS 静默安装」（见 §4.6），不再需要手动下载。
 - 内置 dsh bundle（`resources/dsh-bundle`）在构建期 npm install 打包，版本随构建固化；应用「更新 dsh」走在线 npm 安装。
 - `dsh.profile.bundles` 的插件装配只在 dsh 启动时生效，HMR 不处理新增 bundle 层 → 装插件必须重启服务（已由 `restartForPluginChange` 自动做）。
+
+**v0.1.4（开发中）**：`f251ee2`（git 依赖构建自动放行，此前未发版）+ 应用自更新（§4.6）。注意：本地 main 曾领先 origin/main 8 个提交未推送、无 tag，发布前先 push + 打 tag。
 
 ---
 
@@ -115,6 +117,13 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - 查合成树：`DSH_HOME=... node lib/bin.js web --dump-config`。
 - 插件管理：`dsh plugin --profile web add <pkg|本地目录>`（转发 pnpm + 自动 reconcile bundles）。
 
+### 4.6 应用自更新（v0.1.4+，`updater.ts`）
+- **硬约束**：查版本走 `curlJson`（GitHub API）；下载二进制用 `spawn('curl', ['-sS','-L','--fail','--retry','3','-o',part,url])`。Node fetch/https 在自定义 CA 代理下不可用，别换。
+- **版本判定**：`releases/latest` 的 `tag_name`（去 `v`）与 `app.getVersion()` 字符串比对；只认名字匹配 `-setup.exe` 的资产（NSIS 安装包，artifactName `${productName}-${version}-setup.${ext}`）。
+- **下载**：到 `<dataDir>/updates/dsh-desktop-<version>-setup.exe`（在数据目录，升级不丢）；校验 = 文件大小与资产 size 一致 + 不小于 1MB；进度由主进程轮询 `.part` 文件（300ms）推 `app:updateProgress`。
+- **安装**：`spawn(installer, ['/S','--force-run'], {detached:true, stdio:'ignore'})` + `unref()` → 1s 后 `quitting=true; app.quit()`（before-quit 停 dsh 服务）。NSIS 模板等旧进程退出后替换文件，`--force-run` 装完自动拉起新版本。
+- **发布联动**：`electron-builder --win` 因 publish 配置（`csyyywy/dsh-desktop`）会在 dist 生成 `latest.yml`（升级信息），gh release create 时一并上传（当前内置更新器不依赖它，留作 electron-updater 备用通道）。
+
 ---
 
 ## 5. 构建与发布
@@ -129,6 +138,7 @@ npm run pack:win     # 完整打包：icon → 下载 node/pnpm → 打包 dsh b
 1. `npm run pack:win` → 产出 setup.exe / portable.exe / win-unpacked/。
 2. 绿色版 zip：`rm -rf dist/DeepSeek\ Harness && cp -r dist/win-unpacked "dist/DeepSeek Harness"`，再用 `node_modules/electron-winstaller/vendor/7z.exe a -tzip -mx=1 "dist/DeepSeek Harness-0.1.x-win-x64.zip" "dist/DeepSeek Harness"`（zip 顶层含 `DeepSeek Harness\` 文件夹）。
 3. `gh release create v0.1.x <三个产物> --title v0.1.x --notes-file <notes>`（gh 在 `/c/Program Files/GitHub CLI/gh.exe`）。
+   - 自 v0.1.4 起（publish 已配置）多传 `dist/latest.yml`；应用内自更新走 API 直取安装包，不依赖它，但上传后可选切换 electron-updater。
 4. release notes 放 `d:\ai\测试\宣传稿\release-notes-v*.md`。
 
 ---

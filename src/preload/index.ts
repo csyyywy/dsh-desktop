@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppSettings, AppStatus, DshApi, InstallProgress } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateProgress, DshApi, InstallProgress } from '../shared/types'
 
 const api: DshApi = {
   getStatus: () => ipcRenderer.invoke('status:get'),
@@ -17,6 +17,8 @@ const api: DshApi = {
   openDshHome: () => ipcRenderer.invoke('app:openDshHome'),
   openPluginsDir: () => ipcRenderer.invoke('app:openPluginsDir'),
   checkAppUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  downloadAppUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installAppUpdate: () => ipcRenderer.invoke('app:installUpdate'),
   listPlugins: () => ipcRenderer.invoke('plugins:list'),
   searchPlugins: (query: string, sort?: string, source?: string) => ipcRenderer.invoke('plugins:search', query, sort, source),
   installPlugin: (name: string, source?: string) => ipcRenderer.invoke('plugins:install', name, source),
@@ -40,6 +42,11 @@ const api: DshApi = {
     const h = (_e: IpcRendererEvent, p: InstallProgress): void => cb(p)
     ipcRenderer.on('install:progress', h)
     return () => ipcRenderer.removeListener('install:progress', h)
+  },
+  onAppUpdateProgress: (cb) => {
+    const h = (_e: IpcRendererEvent, p: AppUpdateProgress): void => cb(p)
+    ipcRenderer.on('app:updateProgress', h)
+    return () => ipcRenderer.removeListener('app:updateProgress', h)
   }
 }
 

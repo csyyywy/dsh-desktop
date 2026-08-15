@@ -1,4 +1,4 @@
-import type { AppSettings, AppStatus, AppUpdateInfo, PluginInfo, PluginOpResult } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateResult, PluginInfo, PluginOpResult } from '../shared/types'
 
 /** 外壳对外暴露的操作集合：IPC 与托盘都通过它驱动 */
 export interface Controller {
@@ -17,6 +17,8 @@ export interface Controller {
   openDshHome(): Promise<void>
   openPluginsDir(): Promise<void>
   checkAppUpdate(): Promise<AppUpdateInfo>
+  downloadAppUpdate(): Promise<AppUpdateResult & { path?: string }>
+  installAppUpdate(): AppUpdateResult
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>
