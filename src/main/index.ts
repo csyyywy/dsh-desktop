@@ -536,8 +536,10 @@ async function syncFromWindows(emit?: (msg: string) => void, allowUac = false): 
     pushLog('同步: ' + m)
     emit?.(m)
   }
-  // 配置层排除规则：node_modules 由 WSL 内 pnpm install 重建（平台不同），快照文件冗余
-  const isSyncable = (rel: string): boolean => !/node_modules/.test(rel) && !/\.mkts-snapshot/.test(rel)
+  // 配置层排除规则：node_modules 由 WSL 内 pnpm install 重建（平台不同），快照文件冗余，
+  // .credentials.yaml 不同步——dsh 0.1.0-rc.6 在 WSL 内读它会卡死启动（实测），
+  // API Key 由启动时从本机凭据解析并经环境变量注入
+  const isSyncable = (rel: string): boolean => !/node_modules/.test(rel) && !/\.mkts-snapshot/.test(rel) && rel !== '.credentials.yaml'
   let copied = 0
   try {
     for (const entry of readdirSync(winHome, { withFileTypes: true })) {

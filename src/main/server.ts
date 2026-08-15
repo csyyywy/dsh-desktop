@@ -8,7 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import http from 'node:http'
 import { dshBin, resolveRuntime } from './dsh-manager'
-import { dshHome, loadSettings } from './settings'
+import { dshHome, loadSettings, windowsApiKey } from './settings'
 import { pushLog } from './log'
 import {
   bashQuote, checkLocalhostForwarding, checkWinPortFree, currentDistro, hasSetsid,
@@ -147,12 +147,18 @@ async function startWslServer(): Promise<void> {
   // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其
   // pgid，pidfile 存 `<pid> <pgid>` 两列，停止时优先按进程组杀。
   const pattern = `@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${port}`
+  // 关键坑（实测）：dsh 0.1.0-rc.6 在 WSL 内读 .credentials.yaml 会**卡死启动**
+  // （空文件也卡）。对策：启动前把该文件移走（.synced 后缀保留），
+  // API Key 从 Windows 侧解析后经环境变量注入。
+  const key = windowsApiKey()
+  const envPrefix = key ? `DEEPSEEK_API_KEY=${bashQuote(key)} ` : ''
   // 注意：`&` 本身是命令分隔符，其后不能跟 `;`/`&&`（bash 语法错误），
   // 因此 `&` 与 `sleep 1.5` 合并为同一元素；其余用 `; ` 连接
   const script = [
     `mkdir -p ${bashQuote(home)}`,
     `cd ${bashQuote(ws)}`,
-    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
+    `[ -f ${bashQuote(`${home}/.credentials.yaml`)} ] && mv ${bashQuote(`${home}/.credentials.yaml`)} ${bashQuote(`${home}/.credentials.yaml.synced`)}`,
+    `${envPrefix}DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
     // grep -vw $$：pgrep -f 会匹配运行本脚本的 bash 自身（命令行含 pattern 文本），必须排除
     `PID=$(pgrep -u $(id -un) -f ${bashQuote(pattern)} | grep -vw $$ | head -1)`,
     `PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')`,

@@ -74,3 +74,21 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   renameSync(tmp, p)
   return next
 }
+
+/**
+ * 解析 DEEPSEEK_API_KEY：设置项优先，其次读本机 dsh-home/.credentials.yaml。
+ * WSL 模式用：dsh 0.1.0-rc.6 在 WSL 内读 .credentials.yaml 会卡死（实测），
+ * 因此该文件在 WSL 启动前被移走，Key 改经环境变量注入。
+ */
+export function windowsApiKey(): string {
+  const s = loadSettings()
+  if (s.apiKey) return s.apiKey
+  try {
+    const text = readFileSync(join(dshHome(), '.credentials.yaml'), 'utf8')
+    const m = /DEEPSEEK_API_KEY\s*:\s*["']?([^\s"']+)/.exec(text)
+    if (m) return m[1]
+  } catch {
+    /* 无凭据文件 */
+  }
+  return ''
+}
