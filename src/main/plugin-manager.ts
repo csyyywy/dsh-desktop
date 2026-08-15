@@ -320,8 +320,15 @@ function parseIgnoredBuilds(output: string): string[] {
   return [...new Set(names.filter(Boolean))]
 }
 
+/** YAML key 需要加引号的情形：@ 开头（scoped 包名）或含特殊字符。
+ *  @ 是 YAML 保留字符，裸写会被 pnpm 当缩进错误拒绝。 */
+function yamlKey(name: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(name) ? name : `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
 /** 把包写入 profile 的 pnpm-workspace.yaml 的 allowBuilds（pnpm 11 的构建放行机制）。
- *  已存在的条目会覆盖为 true（顺便修掉被误写的占位文本）。 */
+ *  重建整个 allowBuilds 段：统一给需要引号的 key（如 @scope/pkg）加引号，
+ *  顺带修掉被误写的占位文本 / 裸写的 scoped 条目。 */
 function approveBuilds(pkgNames: string[]): void {
   const fresh = [...new Set(pkgNames.filter(Boolean))]
   if (fresh.length === 0) return
@@ -329,26 +336,22 @@ function approveBuilds(pkgNames: string[]): void {
   try {
     const existing = existsSync(wsPath) ? readFileSync(wsPath, 'utf8') : ''
     const lines = existing.split(/\r?\n/)
-    let allowIdx = lines.findIndex((l) => /^allowBuilds:\s*$/.test(l))
-    if (allowIdx === -1) {
-      lines.push('allowBuilds:')
-      allowIdx = lines.length - 1
-    }
-    const listed = new Map<string, number>()
-    for (let i = allowIdx + 1; i < lines.length; i++) {
-      const m = /^  ([^\s:]+):/.exec(lines[i])
-      if (!m) break
-      listed.set(m[1], i)
-    }
-    for (const name of fresh) {
-      if (listed.has(name)) {
-        lines[listed.get(name) as number] = `  ${name}: true`
-      } else {
-        lines.splice(allowIdx + 1, 0, `  ${name}: true`)
-        allowIdx++
+    const allowIdx = lines.findIndex((l) => /^allowBuilds:\s*$/.test(l))
+    const keys = new Set<string>()
+    let endIdx = lines.length
+    if (allowIdx !== -1) {
+      for (let i = allowIdx + 1; i < lines.length; i++) {
+        const m = /^\s{2}("?)([^\s:"]+)\1:/.exec(lines[i])
+        if (!m) break
+        keys.add(m[2])
+        endIdx = i + 1
       }
     }
-    writeFileSync(wsPath, lines.join('\n') + '\n')
+    for (const n of fresh) keys.add(n)
+    const head = allowIdx === -1 ? lines : lines.slice(0, allowIdx)
+    const tail = allowIdx === -1 ? [] : lines.slice(endIdx)
+    const block = ['allowBuilds:', ...[...keys].map((k) => `  ${yamlKey(k)}: true`)]
+    writeFileSync(wsPath, [...head, ...block, ...tail].join('\n') + '\n')
     pushLog('已放行构建脚本: ' + fresh.join(', '))
   } catch (e) {
     pushLog('写入 allowBuilds 失败: ' + (e as Error).message)
