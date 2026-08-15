@@ -579,11 +579,25 @@ async function syncFromWindows(emit?: (msg: string) => void, allowUac = false): 
 }
 
 /**
- * 插件依赖重建失败时，把 WSL profile 的 package.json 降级为纯净模式
- * （备份原声明到 package.json.syncbak，清空依赖与 bundles）——否则 dsh 启动时
- * 解析缺失的 bundle 直接崩溃（cannot resolve profile bundle），服务起不来。
- * 手动同步成功（pnpm install 重写 package.json 依赖）后自动恢复插件。
+ * 插件依赖重建失败时，把 WSL profile 的 package.json 降级为**标准默认形态**
+ * （备份原声明到 package.json.syncbak）——否则 dsh 启动时解析缺失的 bundle
+ * 直接崩溃（cannot resolve profile bundle）；也不能写成空壳（实测 dsh 对
+ * name≠dsh-profile-web 且无默认 bundles 的 package.json 会启动卡死）。
+ * 标准形态 = dsh 首次启动自动生成的默认 web 组合（dsh-base + dsh-web-app）。
+ * 手动同步成功（pnpm install 重写依赖）后自动恢复插件。
  */
+const PURE_PROFILE_PACKAGE_JSON =
+  JSON.stringify(
+    {
+      name: 'dsh-profile-web',
+      private: true,
+      dependencies: {},
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } }
+    },
+    null,
+    2
+  ) + '\n'
+
 async function degradeToPureProfile(d: string): Promise<void> {
   const wslHomeL = wslDshHomeLinux()
   const profileL = wslHomeL ? `${wslHomeL}/profiles/web` : null
@@ -594,8 +608,8 @@ async function degradeToPureProfile(d: string): Promise<void> {
       const bak = toUnc(d, `${profileL}/package.json.syncbak`)
       if (!existsSync(bak)) copyFileSync(pkgPath, bak)
     }
-    writeFileSync(pkgPath, JSON.stringify({ name: 'web', private: true }, null, 2) + '\n', 'utf8')
-    pushLog('同步: 插件依赖重建失败，WSL profile 已降级为纯净模式（原声明备份为 package.json.syncbak）')
+    writeFileSync(pkgPath, PURE_PROFILE_PACKAGE_JSON, 'utf8')
+    pushLog('同步: 插件依赖重建失败，WSL profile 已降级为默认 web 组合（原声明备份为 package.json.syncbak）')
   } catch (e) {
     pushLog('同步: 纯净模式降级失败: ' + (e as Error).message)
   }
