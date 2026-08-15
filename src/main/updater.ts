@@ -41,6 +41,18 @@ function githubHeaders(): Record<string, string> {
   return h
 }
 
+/** 语义化版本比较：a 是否比 b 新（如 0.1.10 > 0.1.4） */
+function isNewer(a: string, b: string): boolean {
+  const pa = a.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
+  const pb = b.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return false
+}
+
 export async function checkAppUpdate(): Promise<AppUpdateInfo> {
   const repo = loadSettings().appUpdateRepo.trim()
   const current = app.getVersion()
@@ -62,7 +74,7 @@ export async function checkAppUpdate(): Promise<AppUpdateInfo> {
       enabled: true,
       current,
       latest,
-      hasUpdate: latest != null && latest !== current,
+      hasUpdate: latest != null && isNewer(latest, current),
       url: j.html_url ?? null,
       assetUrl: asset?.browser_download_url ?? null,
       assetSize: asset?.size ?? null
