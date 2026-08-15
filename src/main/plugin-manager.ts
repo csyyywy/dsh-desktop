@@ -311,8 +311,54 @@ function inspectInstalled(
   }
 }
 
-/** 精准放行某个包的构建脚本（写入 profile 的 pnpm.onlyBuiltDependencies） */
+/** 从 pnpm 输出的 ERR_PNPM_IGNORED_BUILDS 里解析被拦截的包名（如 cloudflared@0.7.3） */
+function parseIgnoredBuilds(output: string): string[] {
+  if (!/ERR_PNPM_IGNORED_BUILDS/.test(output)) return []
+  const line = output.match(/Ignored build scripts:\s*(.+)/)?.[1]
+  if (!line) return []
+  const names = [...line.matchAll(/(@?[^\s,@]+)@\d[^\s,]*/g)].map((m) => m[1])
+  return [...new Set(names.filter(Boolean))]
+}
+
+/** 把包写入 profile 的 pnpm-workspace.yaml 的 allowBuilds（pnpm 11 的构建放行机制）。
+ *  已存在的条目会覆盖为 true（顺便修掉被误写的占位文本）。 */
+function approveBuilds(pkgNames: string[]): void {
+  const fresh = [...new Set(pkgNames.filter(Boolean))]
+  if (fresh.length === 0) return
+  const wsPath = join(profileDir(), 'pnpm-workspace.yaml')
+  try {
+    const existing = existsSync(wsPath) ? readFileSync(wsPath, 'utf8') : ''
+    const lines = existing.split(/\r?\n/)
+    let allowIdx = lines.findIndex((l) => /^allowBuilds:\s*$/.test(l))
+    if (allowIdx === -1) {
+      lines.push('allowBuilds:')
+      allowIdx = lines.length - 1
+    }
+    const listed = new Map<string, number>()
+    for (let i = allowIdx + 1; i < lines.length; i++) {
+      const m = /^  ([^\s:]+):/.exec(lines[i])
+      if (!m) break
+      listed.set(m[1], i)
+    }
+    for (const name of fresh) {
+      if (listed.has(name)) {
+        lines[listed.get(name) as number] = `  ${name}: true`
+      } else {
+        lines.splice(allowIdx + 1, 0, `  ${name}: true`)
+        allowIdx++
+      }
+    }
+    writeFileSync(wsPath, lines.join('\n') + '\n')
+    pushLog('已放行构建脚本: ' + fresh.join(', '))
+  } catch (e) {
+    pushLog('写入 allowBuilds 失败: ' + (e as Error).message)
+  }
+}
+
+/** 精准放行某个包的构建脚本（pnpm 11 主机制是 pnpm-workspace.yaml 的 allowBuilds；
+ *  package.json 的 pnpm.onlyBuiltDependencies 保留作旧版本兼容） */
 function allowBuild(pkgName: string): void {
+  approveBuilds([pkgName])
   const pkgPath = join(profileDir(), 'package.json')
   if (!existsSync(pkgPath)) return
   try {
@@ -346,11 +392,20 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
         : /^(https?|git):\/\//.test(spec)
           ? spec
           : `git+https://github.com/${repo}`
-    // 预取 npm 包名，精准放行其构建脚本（pnpm 默认拦截 git 依赖的 prepare 脚本）
+    // 预取 npm 包名（下方统一放行构建脚本；pnpm 默认拦截 git 依赖的 prepare 脚本）
     npmName = await fetchRepoNpmName(repo)
-    if (npmName) allowBuild(npmName)
   }
-  const { code, output } = await runPnpm(['add', pnpmSpec])
+  if (npmName) allowBuild(npmName)
+  // pnpm 11 会拦截需要构建脚本的依赖并报 ERR_PNPM_IGNORED_BUILDS（致命）。
+  // 把被拦的包写进 allowBuilds 后重试，最多三轮（依赖树里可能有多个）。
+  let result = await runPnpm(['add', pnpmSpec])
+  for (let attempt = 0; result.code !== 0 && attempt < 3; attempt++) {
+    const ignored = parseIgnoredBuilds(result.output)
+    if (ignored.length === 0) break
+    approveBuilds(ignored)
+    result = await runPnpm(['add', pnpmSpec])
+  }
+  const { code, output } = result
   if (code !== 0) {
     const last = output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
     return { ok: false, message: last || `安装失败 (exit ${code})` }

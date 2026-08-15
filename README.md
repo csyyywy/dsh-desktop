@@ -65,4 +65,4 @@ npm run pack:win  # 产出 dist/ 下的三种形态
 ## 说明
 
 - dsh 处于 developer preview，**存在破坏性变更**；用「更新 → 回滚」应对。
-- 内置 Node v22 携带 npm 10，无 npm 11 的 `allow-scripts` 脚本拦截问题。
+- 内置 Node v22（npm 10）供 dsh 本体安装使用，无 npm 脚本拦截问题；**插件安装走内置 pnpm 11**，其默认拦截依赖构建脚本（`ERR_PNPM_IGNORED_BUILDS`），应用会自动放行并重试，无需手动干预。
