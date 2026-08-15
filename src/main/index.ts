@@ -1,6 +1,7 @@
 // 应用入口：窗口/托盘/生命周期编排 + 启动流程
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import { spawn } from 'node:child_process'
+import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
@@ -452,6 +453,67 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
 }
 
 /**
+ * 确保 WSL 内可访问 GitHub（pnpm 的 git 依赖需要 clone）。
+ * 本机场景（实测）：hosts 把 github.com 劫持到 127.0.0.1（#S302，steamcommunity_302
+ * 本地 443 转发），WSL 的 DNS 转发继承该结果，但 WSL 内 127.0.0.1 是自己的回环
+ * → 连接被拒；真实 IP 直连也被墙。对策：
+ * 1. 探测 WSL 内 github 连通性；
+ * 2. 不通且 Windows 侧 127.0.0.1:443 有转发服务（302）→ UAC 配置
+ *    portproxy 0.0.0.0:443 → 127.0.0.1:443 + 防火墙放行（一次性，持久化）；
+ * 3. WSL /etc/hosts 写入 Windows 宿主 IP（ip route 网关）的 github 映射。
+ */
+async function ensureWslGithubAccess(distro: string): Promise<{ ok: boolean; message: string }> {
+  const probe = await runWslBash('curl -sS -o /dev/null -w "%{http_code}" --max-time 8 https://github.com', { silent: true, distro })
+  if (['200', '301', '302'].includes(probe.stdout.trim())) return { ok: true, message: '' }
+  // Windows 宿主 IP（WSL 网关；tr+cut 提取，避免 awk 单引号被外层剥掉的问题）
+  const winIp = (await runWslBash("ip route show default | tr -s ' ' | cut -d' ' -f3 | head -1", { silent: true, distro })).stdout.trim()
+  if (!winIp) return { ok: false, message: '无法获取 Windows 宿主 IP，git 依赖可能安装失败' }
+  const hostsLine = `${winIp} github.com www.github.com api.github.com codeload.github.com raw.githubusercontent.com objects.githubusercontent.com gist.github.com`
+  // 宿主 443 已可达（portproxy 已配置过）→ 直接写 hosts 验证，不再弹 UAC
+  const hostProbe = await runWslBash(`curl -sS -o /dev/null -w "%{http_code}" --max-time 3 https://${winIp}:443`, { silent: true, distro })
+  if (!['200', '301', '302'].includes(hostProbe.stdout.trim())) {
+    // Windows 侧是否有 302 类本地转发（127.0.0.1:443）
+    const hasLocal443 = await new Promise<boolean>((r) => {
+      const s = connect({ host: '127.0.0.1', port: 443 }, () => {
+        s.destroy()
+        r(true)
+      })
+      s.on('error', () => r(false))
+    })
+    if (!hasLocal443) {
+      return { ok: false, message: 'WSL 内无法访问 GitHub，且本机 127.0.0.1:443 无本地转发服务（steamcommunity_302 未运行？），git 依赖将安装失败' }
+    }
+    // 配置 portproxy + 防火墙（UAC 一次，幂等：先 delete 忽略错误再 add）
+    const netshScript =
+      "netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=443 2>$null; " +
+      'netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=443 connectaddress=127.0.0.1 connectport=443; ' +
+      "netsh advfirewall firewall delete rule name='dsh-wsl-gh443' 2>$null; " +
+      "netsh advfirewall firewall add rule name='dsh-wsl-gh443' dir=in action=allow protocol=TCP localport=443"
+    pushLog('WSL 内 GitHub 不可达（本机 hosts 劫持 127.0.0.1），请求提权配置 0.0.0.0:443 → 127.0.0.1:443 转发（请在弹出的 UAC 中允许）')
+    try {
+      const psCmd = `Start-Process powershell -ArgumentList '-NoProfile','-Command',${JSON.stringify(netshScript)} -Verb RunAs -Wait`
+      await new Promise<void>((resolve) => {
+        const child = spawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { windowsHide: true })
+        child.on('close', () => resolve())
+        child.on('error', () => resolve())
+      })
+    } catch {
+      /* 用户拒绝 UAC 或失败，继续尝试直连 */
+    }
+  }
+  // WSL hosts 写入 Windows 宿主 IP
+  const res = await runWslBash(`grep -q "github.com" /etc/hosts || echo "${hostsLine}" | sudo tee -a /etc/hosts > /dev/null`, { distro })
+  if (res.code !== 0) return { ok: false, message: '写入 /etc/hosts 失败: ' + (res.stderr || res.stdout).trim() }
+  // 验证
+  const re = await runWslBash('curl -sS -o /dev/null -w "%{http_code}" --max-time 10 https://github.com', { silent: true, distro })
+  if (['200', '301', '302'].includes(re.stdout.trim())) {
+    pushLog(`WSL 内 GitHub 已可达（经 Windows 宿主 ${winIp}:443 转发）`)
+    return { ok: true, message: '' }
+  }
+  return { ok: false, message: 'GitHub 转发配置后仍不可达（请确认已允许 UAC），git 依赖可能安装失败' }
+}
+
+/**
  * 从本机 dsh-home 同步配置/插件/预设/会话到 WSL dsh-home（v0.2.0）：
  * 1. 复制配置层（排除 node_modules / pnpm 快照）：.agent-presets、sessions、storages、
  *    super-injector、profiles/web 的 package.json/pnpm-workspace.yaml/pnpm-lock.yaml/cordis*.yml、凭据散文件
@@ -487,6 +549,10 @@ async function syncFromWindows(emit?: (msg: string) => void): Promise<PluginOpRe
         copyFileSync(src, dst)
       }
     }
+    // 确保 WSL 内可访问 GitHub（git 依赖 clone 需要；本机 hosts 劫持场景自动打通）
+    log('确保 WSL 内可访问 GitHub（git 依赖）…')
+    const gh = await ensureWslGithubAccess(d)
+    if (!gh.ok) pushLog('同步: GitHub 不可达警告 - ' + gh.message)
     log('WSL 内 pnpm install 重建插件依赖（平台正确）…')
     const r = await runPnpm(['install'])
     if (r.code !== 0) {
@@ -740,7 +806,8 @@ const controller: Controller = {
   },
   // ---------- v0.2.0：文件桥 ----------
   fsbList: (side: FsSide, path: string) => {
-    if (!validateIpcArg(path)) return Promise.reject(new Error('非法路径参数'))
+    // path === '' = Windows 盘符列表虚拟根（文件桥「主页」按钮）
+    if (!(path === '' || validateIpcArg(path))) return Promise.reject(new Error('非法路径参数'))
     try {
       return Promise.resolve(fsbList(side, path))
     } catch (e) {

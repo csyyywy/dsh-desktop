@@ -153,12 +153,12 @@ export default function FileBridgePanel() {
     void load('wsl', wsl.path)
   }, [load, win.path, wsl.path])
 
-  // 挂载时加载一次（wsl 侧仅当已切到 WSL 后端）
+  // 挂载时加载一次（wsl 侧仅当已切到 WSL 后端；win 侧 '' 盘符列表也加载）
   const loadedRef = useRef(false)
   useEffect(() => {
     if (loadedRef.current) return
     loadedRef.current = true
-    if (win.path) void load('win', win.path)
+    void load('win', win.path)
     if (wsl.path && status?.backend === 'wsl') void load('wsl', wsl.path)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, status])
