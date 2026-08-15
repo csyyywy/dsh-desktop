@@ -13,7 +13,8 @@ const nodeExe = join(destDir, 'node.exe')
 // 部署时由发行版内 tar 解压以保留可执行权限位。
 const linuxTar = join(root, 'resources', 'node-linux.tar.xz')
 
-// 允许用环境变量覆盖版本/镜像
+// 允许用环境变量覆盖版本/镜像。
+// 国内加速：DSH_NODE_MIRROR=https://npmmirror.com/mirrors/node/v22.21.1（或任意 nodejs.org/dist 镜像）
 const version = process.env.DSH_NODE_VERSION || NODE_VERSION
 const baseUrl = process.env.DSH_NODE_MIRROR || `https://nodejs.org/dist/${version}`
 

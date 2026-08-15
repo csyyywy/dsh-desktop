@@ -321,6 +321,14 @@ function SettingsPanel() {
           <Field label="dsh 版本（默认 latest）">
             <input value={local.dshVersion} onChange={(e) => set({ dshVersion: e.target.value })} className={inputCls} />
           </Field>
+          <Field label="npm 镜像源（安装 dsh / 插件用，国内加速）">
+            <input
+              value={local.npmRegistry}
+              onChange={(e) => set({ npmRegistry: e.target.value })}
+              className={inputCls}
+              placeholder="https://registry.npmjs.org（官方）或 https://registry.npmmirror.com"
+            />
+          </Field>
           <Field label="应用更新仓库（owner/repo，空 = 禁用）">
             <input
               value={local.appUpdateRepo}

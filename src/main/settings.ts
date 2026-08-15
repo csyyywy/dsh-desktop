@@ -16,7 +16,7 @@ const DEFAULTS: AppSettings = {
   backend: 'local',
   wslDistro: '',
   wslHome: '',
-  npmRegistry: ''
+  npmRegistry: 'https://registry.npmmirror.com'
 }
 
 /** 是否为便携/绿色版（数据目录紧邻 exe），而不是安装版（数据在 userData） */

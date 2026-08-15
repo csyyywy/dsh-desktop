@@ -46,19 +46,21 @@ async function runPnpm(args: string[]): Promise<{ code: number; output: string }
   if (!existsSync(join(dir, 'package.json'))) {
     return { code: 1, output: '配置目录尚未初始化，请先启动一次服务' }
   }
+  const registry = loadSettings().npmRegistry
+  const fullArgs = registry ? [...args, '--registry', registry] : args
   if (loadSettings().backend === 'wsl') {
     const node = wslNodeBin()
     const pnpm = wslPnpmCjs()
     const linuxDir = profileLinuxDir()
     if (!node || !pnpm || !linuxDir) return { code: 1, output: 'WSL 后端未部署（缺少 node/pnpm）' }
-    pushLog(`$ wsl pnpm ${args.join(' ')}`)
-    const res = await runWsl([node, pnpm, '--dir', linuxDir, ...args], { timeoutMs: 10 * 60 * 1000 })
+    pushLog(`$ wsl pnpm ${fullArgs.join(' ')}`)
+    const res = await runWsl([node, pnpm, '--dir', linuxDir, ...fullArgs], { timeoutMs: 10 * 60 * 1000 })
     return { code: res.code, output: res.stdout + res.stderr }
   }
   return new Promise((resolve) => {
     const rt = resolveRuntime()
-    pushLog(`$ pnpm ${args.join(' ')}`)
-    const child = spawn(rt.node, [pnpmCjsPath(), ...args], {
+    pushLog(`$ pnpm ${fullArgs.join(' ')}`)
+    const child = spawn(rt.node, [pnpmCjsPath(), ...fullArgs], {
       cwd: dir,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']

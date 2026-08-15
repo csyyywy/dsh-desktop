@@ -163,7 +163,11 @@ export function runNpm(args: string[], onLine?: (line: string) => void): Promise
 /** 安装/升级/回滚 dsh 到指定版本（'latest' 或具体 semver） */
 export function installDsh(version: string, onLine?: (line: string) => void): Promise<number> {
   const target = version === 'latest' ? '@deepseek-ai/dsh@latest' : `@deepseek-ai/dsh@${version}`
-  return runNpm(['install', '--prefix', dataDir(), '--no-audit', '--no-fund', target], onLine)
+  const args = ['install', '--prefix', dataDir(), '--no-audit', '--no-fund']
+  const registry = loadSettings().npmRegistry
+  if (registry) args.push('--registry', registry)
+  args.push(target)
+  return runNpm(args, onLine)
 }
 
 // ---------- WSL 分支（v0.2.0） ----------
