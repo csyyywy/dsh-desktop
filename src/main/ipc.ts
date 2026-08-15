@@ -28,5 +28,22 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('plugins:backups', () => controller.listBackups())
   ipcMain.handle('plugins:restoreBackup', (_e, name: string) => controller.restoreBackup(name))
   ipcMain.handle('plugins:deleteBackup', (_e, name: string) => controller.deleteBackup(name))
+  // v0.2.0：WSL 后端
+  ipcMain.handle('backend:info', () => controller.backendInfo())
+  ipcMain.handle('backend:setMode', (_e, mode: 'local' | 'wsl') => controller.backendSetMode(mode))
+  ipcMain.handle('backend:setDistro', (_e, distro: string) => controller.backendSetDistro(distro))
+  ipcMain.handle('backend:setup', (_e, distro: string) => controller.backendSetup(distro))
+  ipcMain.handle('backend:installDistro', (_e, name: string) => controller.backendInstallDistro(name))
+  ipcMain.handle('backend:diagnose', () => controller.backendDiagnose())
+  ipcMain.handle('backend:forceCleanup', () => controller.backendForceCleanup())
+  // v0.2.0：文件桥
+  ipcMain.handle('fsb:list', (_e, side: 'win' | 'wsl', path: string) => controller.fsbList(side, path))
+  ipcMain.handle('fsb:transfer', (_e, jobs: Parameters<Controller['fsbTransfer']>[0]) => controller.fsbTransfer(jobs))
+  ipcMain.handle('fsb:cancel', (_e, id: string) => controller.fsbCancel(id))
+  ipcMain.handle('fsb:remove', (_e, side: 'win' | 'wsl', path: string) => controller.fsbRemove(side, path))
+  ipcMain.handle('fsb:rename', (_e, side: 'win' | 'wsl', path: string, newName: string) => controller.fsbRename(side, path, newName))
+  ipcMain.handle('fsb:mkdir', (_e, side: 'win' | 'wsl', path: string) => controller.fsbMkdir(side, path))
+  ipcMain.handle('fsb:translate', (_e, path: string) => controller.fsbTranslate(path))
+  ipcMain.handle('fsb:open', (_e, side: 'win' | 'wsl', path: string, terminal?: boolean) => controller.fsbOpen(side, path, terminal))
   ipcMain.handle('app:quit', () => controller.quit())
 }

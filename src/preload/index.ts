@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppSettings, AppStatus, AppUpdateProgress, DshApi, InstallProgress } from '../shared/types'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type { AppSettings, AppStatus, AppUpdateProgress, BackendMode, BackendSetupProgress, DshApi, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress } from '../shared/types'
 
 const api: DshApi = {
   getStatus: () => ipcRenderer.invoke('status:get'),
@@ -48,6 +48,34 @@ const api: DshApi = {
     const h = (_e: IpcRendererEvent, p: AppUpdateProgress): void => cb(p)
     ipcRenderer.on('app:updateProgress', h)
     return () => ipcRenderer.removeListener('app:updateProgress', h)
+  },
+  // v0.2.0：WSL 后端
+  backendInfo: () => ipcRenderer.invoke('backend:info'),
+  backendSetMode: (mode: BackendMode) => ipcRenderer.invoke('backend:setMode', mode),
+  backendSetDistro: (distro: string) => ipcRenderer.invoke('backend:setDistro', distro),
+  backendSetup: (distro: string) => ipcRenderer.invoke('backend:setup', distro),
+  backendInstallDistro: (name: string) => ipcRenderer.invoke('backend:installDistro', name),
+  backendDiagnose: () => ipcRenderer.invoke('backend:diagnose'),
+  backendForceCleanup: () => ipcRenderer.invoke('backend:forceCleanup'),
+  onBackendSetupProgress: (cb) => {
+    const h = (_e: IpcRendererEvent, p: BackendSetupProgress): void => cb(p)
+    ipcRenderer.on('backend:setupProgress', h)
+    return () => ipcRenderer.removeListener('backend:setupProgress', h)
+  },
+  // v0.2.0：文件桥
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  fsbList: (side: FsSide, path: string) => ipcRenderer.invoke('fsb:list', side, path),
+  fsbTransfer: (jobs: FsTransferRequest[]) => ipcRenderer.invoke('fsb:transfer', jobs),
+  fsbCancel: (id: string) => ipcRenderer.invoke('fsb:cancel', id),
+  fsbRemove: (side: FsSide, path: string) => ipcRenderer.invoke('fsb:remove', side, path),
+  fsbRename: (side: FsSide, path: string, newName: string) => ipcRenderer.invoke('fsb:rename', side, path, newName),
+  fsbMkdir: (side: FsSide, path: string) => ipcRenderer.invoke('fsb:mkdir', side, path),
+  fsbTranslate: (path: string) => ipcRenderer.invoke('fsb:translate', path),
+  fsbOpen: (side: FsSide, path: string, terminal?: boolean) => ipcRenderer.invoke('fsb:open', side, path, terminal),
+  onFsbProgress: (cb) => {
+    const h = (_e: IpcRendererEvent, p: FsTransferProgress): void => cb(p)
+    ipcRenderer.on('fsb:progress', h)
+    return () => ipcRenderer.removeListener('fsb:progress', h)
   }
 }
 

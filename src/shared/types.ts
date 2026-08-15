@@ -21,6 +21,14 @@ export interface AppSettings {
   background: string
   /** GitHub Personal Access Token，用于解除搜索频率限制（可选） */
   githubToken: string
+  /** 运行后端：本机（默认）或 WSL 发行版内 */
+  backend: BackendMode
+  /** WSL 发行版名（backend=wsl 时生效；空 = 未配置） */
+  wslDistro: string
+  /** 发行版内默认用户的 HOME（backendSetup 时解析写入） */
+  wslHome: string
+  /** WSL 内 npm 镜像 registry（可选，空 = 官方源） */
+  npmRegistry: string
 }
 
 export interface PluginInfo {
@@ -55,6 +63,14 @@ export interface AppStatus {
   /** 使用内置便携 Node 还是系统 Node */
   nodeLabel: 'bundled' | 'system'
   error: string | null
+  /** 当前运行后端 */
+  backend: BackendMode
+  /** WSL 发行版名（backend=wsl 时非空） */
+  wslDistro: string | null
+  /** WSL 后端是否已部署就绪 */
+  wslReady: boolean
+  /** WSL 内 dsh 残留进程 pid（无法自动清理时） */
+  stalePid: number | null
 }
 
 export interface InstallProgress {
@@ -123,4 +139,107 @@ export interface DshApi {
   onStatusChanged(cb: (s: AppStatus) => void): () => void
   onLogLine(cb: (line: string) => void): () => void
   onInstallProgress(cb: (p: InstallProgress) => void): () => void
+  // ---------- v0.2.0：WSL 后端 + 文件桥 ----------
+  backendInfo(): Promise<BackendInfo>
+  backendSetMode(mode: BackendMode): Promise<BackendInfo>
+  backendSetDistro(distro: string): Promise<BackendInfo>
+  backendSetup(distro: string): Promise<PluginOpResult>
+  backendInstallDistro(name: string): Promise<PluginOpResult>
+  backendDiagnose(): Promise<string[]>
+  backendForceCleanup(): Promise<PluginOpResult>
+  onBackendSetupProgress(cb: (p: BackendSetupProgress) => void): () => void
+  /** 拖拽文件 → 本地绝对路径（Electron webUtils） */
+  getPathForFile(file: File): string
+  fsbList(side: FsSide, path: string): Promise<FsEntry[]>
+  fsbTransfer(jobs: FsTransferRequest[]): Promise<void>
+  fsbCancel(id: string): Promise<void>
+  fsbRemove(side: FsSide, path: string): Promise<PluginOpResult>
+  fsbRename(side: FsSide, path: string, newName: string): Promise<PluginOpResult>
+  fsbMkdir(side: FsSide, path: string): Promise<PluginOpResult>
+  fsbTranslate(path: string): Promise<FsTranslateResult>
+  fsbOpen(side: FsSide, path: string, terminal?: boolean): Promise<PluginOpResult>
+  onFsbProgress(cb: (p: FsTransferProgress) => void): () => void
+}
+
+// ---------- v0.2.0：WSL 后端 ----------
+
+export type BackendMode = 'local' | 'wsl'
+
+/** wsl -l -v 解析出的发行版信息 */
+export interface WslDistroInfo {
+  name: string
+  state: string
+  version: string
+  /** 名称是否满足部署白名单（^[A-Za-z0-9._-]+$，不含空格/特殊字符） */
+  deployable: boolean
+}
+
+export interface BackendInfo {
+  mode: BackendMode
+  distro: string | null
+  distros: WslDistroInfo[]
+  /** WSL 后端是否已部署就绪（bin/pidfile 可寻址） */
+  ready: boolean
+  wslVersion: string | null
+  kernelVersion: string | null
+  error: string | null
+}
+
+/** backend:setup 的阶段进度（主进程 → 渲染层） */
+export interface BackendSetupProgress {
+  stage: 'ready' | 'mkdir' | 'node' | 'pnpm' | 'npm-install' | 'verify'
+  percent: number
+  message: string
+}
+
+// ---------- v0.2.0：文件桥 ----------
+
+export type FsSide = 'win' | 'wsl'
+
+export interface FsEntry {
+  name: string
+  /** 所在侧路径：win = Windows 路径；wsl = Linux 路径（不含 UNC 前缀） */
+  path: string
+  isDir: boolean
+  size: number
+  mtime: number
+}
+
+export interface FsTransferRequest {
+  id: string
+  srcSide: FsSide
+  /** 源文件（win = Windows 路径；wsl = Linux 路径） */
+  srcPath: string
+  dstSide: FsSide
+  /** 目标目录（win = Windows 路径；wsl = Linux 路径） */
+  dstPath: string
+  move: boolean
+  overwrite?: boolean
+}
+
+export interface FsTransferProgress {
+  id: string
+  name: string
+  srcPath: string
+  dstPath: string
+  srcSide: FsSide
+  dstSide: FsSide
+  phase: 'queued' | 'copying' | 'done' | 'error' | 'cancelled'
+  /** 已复制字节 */
+  done: number
+  /** 源文件总字节 */
+  total: number
+  bytesPerSec: number
+  message?: string
+}
+
+export interface FsTranslateResult {
+  /** Windows 侧可访问的 UNC 路径（\\wsl.localhost\<distro>\...），对任意 WSL 路径有效 */
+  windows: string
+  /** Windows 盘符映射（wslpath -w，仅对 /mnt/* 等 automount 路径有效），不可用时为 null */
+  windowsLocal: string | null
+  /** Linux 侧绝对路径 */
+  linux: string
+  /** 输入路径的判定类别 */
+  kind: 'win' | 'wsl-unc' | 'linux'
 }

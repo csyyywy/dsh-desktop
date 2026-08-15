@@ -2,18 +2,29 @@
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { existsSync, mkdirSync } from 'node:fs'
-import type { AppSettings, AppStatus, AppUpdateProgress, InstallProgress, ServerPhase } from '../shared/types'
+import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { promises as fsp } from 'node:fs'
+import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, PluginOpResult, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
 import { loadSettings, saveSettings, dshHome } from './settings'
 import { pushLog, getLogs, onLog } from './log'
-import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh } from './dsh-manager'
-import { startServer, stopServer, restartServer, isRunning } from './server'
+import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
+import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
 import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
+import {
+  bashQuote, currentDistro, hasSetsid, listDistros, pingDistro, runWsl, runWslGlobal, toUnc,
+  validateIpcArg, VALID_DISTRO_RE, wslDshHomeLinux, wslDshHomeWindows,
+  wslHomeOf, wslVersion, kernelVersion, wslNodeBin
+} from './wsl'
+import {
+  cancelTransfer as fsbCancel, enqueueTransfer as fsbEnqueue, listEntries as fsbList,
+  mkdirEntry as fsbMkdir, openEntry as fsbOpen, removeEntry as fsbRemove,
+  renameEntry as fsbRename, translatePath as fsbTranslate
+} from './fs-bridge'
 
 const PRELOAD = join(__dirname, '../preload/index.js')
 
@@ -160,18 +171,23 @@ function notifyWindows(): BrowserWindow[] {
 function buildStatus(): AppStatus {
   const s = loadSettings()
   const rt = resolveRuntime()
+  const wslMode = s.backend === 'wsl'
   return {
     phase,
-    running: isRunning(),
+    running: wslMode ? wslIsRunning() : isRunning(),
     port: s.port || 3080,
     url: `http://127.0.0.1:${s.port || 3080}`,
-    installedVersion: installedVersion(),
+    installedVersion: wslMode ? wslInstalledVersion() : installedVersion(),
     latestVersion: latestVersionCache,
-    workspace: s.workspace || process.env.USERPROFILE || process.cwd(),
-    dshHome: dshHome(),
+    workspace: wslMode ? (s.workspace || s.wslHome || '') : (s.workspace || process.env.USERPROFILE || process.cwd()),
+    dshHome: wslMode ? (wslDshHomeWindows() ?? dshHome()) : dshHome(),
     appVersion: app.getVersion(),
     nodeLabel: rt.label,
-    error
+    error,
+    backend: s.backend,
+    wslDistro: wslMode ? s.wslDistro : null,
+    wslReady: wslMode && !!s.wslDistro && wslIsComplete(),
+    stalePid: wslMode ? wslStale() : null
   }
 }
 
@@ -189,6 +205,14 @@ function broadcastAppUpdateProgress(p: AppUpdateProgress): void {
   for (const w of notifyWindows()) w.webContents.send('app:updateProgress', p)
 }
 
+function broadcastBackendSetupProgress(p: BackendSetupProgress): void {
+  for (const w of notifyWindows()) w.webContents.send('backend:setupProgress', p)
+}
+
+function broadcastFsbProgress(p: FsTransferProgress): void {
+  for (const w of notifyWindows()) w.webContents.send('fsb:progress', p)
+}
+
 // ---------- 服务 / 安装编排 ----------
 function onServerExit(code: number | null): void {
   if (quitting) return
@@ -202,12 +226,17 @@ async function doInstall(targetVersion: string): Promise<void> {
   error = null
   broadcastProgress({ phase: 'installing', message: `正在安装 @deepseek-ai/dsh@${targetVersion} …` })
   broadcastStatus()
-  const code = await installDsh(targetVersion, (line) => {
-    broadcastProgress({ phase: 'installing', message: line })
-  })
+  const wslMode = loadSettings().backend === 'wsl'
+  const code = wslMode
+    ? await installDshWsl(targetVersion, (line) => {
+        broadcastProgress({ phase: 'installing', message: line })
+      })
+    : await installDsh(targetVersion, (line) => {
+        broadcastProgress({ phase: 'installing', message: line })
+      })
   if (code !== 0) {
     phase = 'error'
-    error = `npm 安装失败 (exit ${code})，详见日志`
+    error = `${wslMode ? 'WSL 内' : 'npm'} 安装失败 (exit ${code})，详见日志`
     broadcastProgress({ phase: 'error', message: error })
     broadcastStatus()
     throw new Error(error)
@@ -217,7 +246,21 @@ async function doInstall(targetVersion: string): Promise<void> {
   broadcastStatus()
 }
 
+/** dsh 安装目标版本：显式配置优先，否则 WSL 用内置 bundle 版本（与外壳配套），本机用 latest */
+function resolveDshTarget(): string {
+  const s = loadSettings()
+  if (s.dshVersion && s.dshVersion !== 'latest') return s.dshVersion
+  if (s.backend === 'wsl') return bundledDshVersion() ?? 'latest'
+  return 'latest'
+}
+
 async function ensureInstalled(): Promise<void> {
+  if (loadSettings().backend === 'wsl') {
+    // WSL：无内置 bundle 恢复（win32 产物不通用），直接发行版内 npm 安装
+    if (wslIsComplete()) return
+    await doInstall(resolveDshTarget())
+    return
+  }
   if (isComplete()) return
   if (hasBundledDsh()) {
     broadcastProgress({ phase: 'installing', message: '正在恢复内置 DeepSeek Harness …' })
@@ -264,8 +307,8 @@ async function restartForPluginChange(): Promise<void> {
 }
 
 async function updateDsh(version?: string): Promise<AppStatus> {
-  const target = version ?? loadSettings().dshVersion ?? 'latest'
-  const wasRunning = isRunning()
+  const target = version ?? resolveDshTarget()
+  const wasRunning = isRunning() || wslIsRunning()
   await doInstall(target)
   if (wasRunning) await startDsh()
   return buildStatus()
@@ -283,6 +326,114 @@ async function applySettings(patch: Partial<AppSettings>): Promise<AppSettings> 
   }
   broadcastStatus()
   return next
+}
+
+// ---------- WSL 后端（v0.2.0） ----------
+
+async function buildBackendInfo(): Promise<BackendInfo> {
+  const s = loadSettings()
+  const { distros, error } = await listDistros()
+  const [wv, kv] = await Promise.all([wslVersion(), kernelVersion()])
+  return {
+    mode: s.backend,
+    distro: s.backend === 'wsl' ? s.wslDistro : null,
+    distros,
+    ready: s.backend === 'wsl' && !!s.wslDistro && wslIsComplete(),
+    wslVersion: wv,
+    kernelVersion: kv,
+    error
+  }
+}
+
+/** backend:setup 主流程：就绪检查 → 目录 → Node(tar) → pnpm → npm install dsh → 校验 */
+async function runBackendSetup(distro: string): Promise<PluginOpResult> {
+  if (!validateIpcArg(distro) || !VALID_DISTRO_RE.test(distro)) {
+    return { ok: false, message: '发行版名称含特殊字符，暂不支持部署' }
+  }
+  const emit = (stage: BackendSetupProgress['stage'], percent: number, message: string): void =>
+    broadcastBackendSetupProgress({ stage, percent, message })
+  emit('ready', 0, `正在检查发行版 ${distro} …`)
+  const ping = await pingDistro(distro)
+  if (!ping.ok) return { ok: false, message: ping.message }
+  // 旧后端（本机或其它发行版）运行中先停止
+  if (isRunning() || wslIsRunning()) await stopServer()
+
+  emit('mkdir', 5, '创建目录结构 …')
+  const home = await wslHomeOf(distro)
+  if (!home) return { ok: false, message: '无法解析发行版 HOME' }
+  const base = `${home}/.dsh-desktop`
+  const mk = await runWsl(['bash', '-lc', `mkdir -p ${bashQuote(`${base}/node`)} ${bashQuote(`${base}/pnpm`)} ${bashQuote(`${base}/logs`)}`], { silent: true, distro })
+  if (mk.code !== 0) return { ok: false, message: '创建目录失败: ' + (mk.stderr || mk.stdout).trim() }
+
+  emit('node', 15, '拷贝 Linux Node（约 25MB）…')
+  const tarSrc = app.isPackaged
+    ? join(process.resourcesPath, 'node-linux.tar.xz')
+    : join(app.getAppPath(), 'resources', 'node-linux.tar.xz')
+  if (!existsSync(tarSrc)) return { ok: false, message: '缺少内置 Linux Node 资源（node-linux.tar.xz），请重新构建应用' }
+  try {
+    await fsp.copyFile(tarSrc, toUnc(distro, `${base}/node.tar.xz`))
+  } catch (e) {
+    return { ok: false, message: '拷贝 Node 失败: ' + (e as Error).message }
+  }
+  emit('node', 30, '解压 Node（tar 保留执行权限）…')
+  const x = await runWsl(['bash', '-lc', `cd ${bashQuote(base)} && tar -xJf node.tar.xz --strip-components=1 -C node && chmod +x node/bin/node && rm -f node.tar.xz`], { timeoutMs: 180000, distro })
+  if (x.code !== 0) return { ok: false, message: '解压 Node 失败: ' + (x.stderr || x.stdout).trim() }
+
+  emit('pnpm', 45, '拷贝 pnpm（约 36MB）…')
+  const pnpmSrc = app.isPackaged
+    ? join(process.resourcesPath, 'pnpm')
+    : join(app.getAppPath(), 'resources', 'pnpm')
+  try {
+    cpSync(pnpmSrc, toUnc(distro, `${base}/pnpm`), { recursive: true })
+  } catch (e) {
+    return { ok: false, message: '拷贝 pnpm 失败: ' + (e as Error).message }
+  }
+
+  const target = resolveDshTarget()
+  emit('npm-install', 60, `安装 @deepseek-ai/dsh@${target}（发行版内 npm，首次需联网）…`)
+  // 部署期间 settings 尚未切换：显式传 distro/home，不走 currentDistro()/wslBaseLinux()
+  const code = await installDshWsl(target, (line) => emit('npm-install', 60, line), { distro, home })
+  if (code !== 0) return { ok: false, message: 'dsh 安装失败，详见日志（检查网络/代理）' }
+
+  emit('verify', 95, '校验安装 …')
+  // 先保存配置再校验（wslIsComplete 依赖 backend 配置）
+  const prev = loadSettings()
+  saveSettings({ ...prev, backend: 'wsl', wslDistro: distro, wslHome: home })
+  if (!wslIsComplete()) {
+    saveSettings({ ...prev })
+    return { ok: false, message: '安装校验失败（依赖不完整），请重试' }
+  }
+  const setsid = await hasSetsid(distro)
+  if (!setsid) {
+    return { ok: false, message: '发行版缺少 setsid（util-linux），请先运行: sudo apt install util-linux（部署已完成，修复后即可启动）' }
+  }
+  emit('verify', 100, '部署完成')
+  broadcastStatus()
+  return { ok: true, message: `WSL 后端部署完成（${distro}），dsh@${target}` }
+}
+
+async function backendDiagnose(): Promise<string[]> {
+  const lines: string[] = []
+  const status = await runWslGlobal(['--status'], { silent: true })
+  lines.push('--- wsl --status ---')
+  lines.push(status.stdout.trim() || status.stderr.trim() || '(空)')
+  const { distros, error } = await listDistros()
+  lines.push('--- wsl -l -v ---')
+  if (error) lines.push('枚举失败: ' + error)
+  for (const d of distros) lines.push(`${d.name}  ${d.state}  WSL${d.version}${d.deployable ? '' : '（名称含特殊字符，不可部署）'}`)
+  const distro = currentDistro()
+  if (distro) {
+    const ping = await pingDistro(distro, 15000)
+    lines.push(`--- ping ${distro} ---`)
+    lines.push(ping.ok ? 'ok' : ping.message)
+    const node = wslNodeBin()
+    if (node) {
+      const nv = await runWsl([node, '--version'], { silent: true })
+      lines.push(`node: ${(nv.stdout.trim().split('\n')[0]) || '不可用'}`)
+    }
+    lines.push(`dsh: ${wslInstalledVersion() ?? '未安装'}`)
+  }
+  return lines
 }
 
 const controller: Controller = {
@@ -321,10 +472,29 @@ const controller: Controller = {
   openWebUI: () => openMain(),
   openDashboard: () => showDashboard(),
   openDshHome: async () => {
+    if (loadSettings().backend === 'wsl') {
+      const win = wslDshHomeWindows()
+      if (win) {
+        mkdirSync(win, { recursive: true })
+        await shell.openPath(win)
+        return
+      }
+    }
     mkdirSync(dshHome(), { recursive: true })
     await shell.openPath(dshHome())
   },
   openPluginsDir: async () => {
+    if (loadSettings().backend === 'wsl') {
+      const home = wslDshHomeLinux()
+      const d = currentDistro()
+      if (home && d) {
+        const web = toUnc(d, `${home}/profiles/web`)
+        const target = existsSync(web) ? web : wslDshHomeWindows() ?? web
+        mkdirSync(target, { recursive: true })
+        await shell.openPath(target)
+        return
+      }
+    }
     const web = join(dshHome(), 'profiles', 'web')
     const target = existsSync(web) ? web : dshHome()
     mkdirSync(target, { recursive: true })
@@ -332,10 +502,15 @@ const controller: Controller = {
   },
   checkAppUpdate,
   downloadAppUpdate: () => downloadAppUpdateFile((p) => broadcastAppUpdateProgress(p)),
-  installAppUpdate: () => {
+  installAppUpdate: async () => {
     const installer = downloadedUpdatePath()
     if (!installer) {
       return { ok: false, message: '没有已下载的更新包，请先下载' }
+    }
+    // WSL 后端运行时先停止，避免安装器拉起的新实例与旧实例端口冲突
+    if (loadSettings().backend === 'wsl' && (isRunning() || wslIsRunning())) {
+      pushLog('应用自更新：先停止 WSL 后端')
+      await stopServer()
     }
     pushLog(`应用自更新：启动安装器 ${installer}`)
     try {
@@ -357,11 +532,26 @@ const controller: Controller = {
   listPlugins: () => listInstalledPlugins(),
   searchPlugins: (query, sort, source) => searchPlugins(query, sort, source),
   installPlugin: async (name, source) => {
+    if (loadSettings().backend === 'wsl') {
+      // WSL：停服 → 安装（备份在停止期间快照，保证一致）→ 恢复原运行状态
+      const wasRunning = wslIsRunning()
+      if (wasRunning) await stopServer()
+      const r = await installPlugin(name, source)
+      if (r.ok && wasRunning) await restartServer(onServerExit)
+      return r
+    }
     const r = await installPlugin(name, source)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   },
   uninstallPlugin: async (name) => {
+    if (loadSettings().backend === 'wsl') {
+      const wasRunning = wslIsRunning()
+      if (wasRunning) await stopServer()
+      const r = await uninstallPlugin(name)
+      if (r.ok && wasRunning) await restartServer(onServerExit)
+      return r
+    }
     const r = await uninstallPlugin(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
@@ -394,16 +584,105 @@ const controller: Controller = {
   },
   listBackups: async () => listBackups(),
   restoreBackup: async (name) => {
-    const r = restoreBackup(name)
+    if (loadSettings().backend === 'wsl') {
+      // 回退在停服期间执行（profile 快照一致性），完成后恢复原运行状态
+      const wasRunning = wslIsRunning()
+      if (wasRunning) await stopServer()
+      const r = await restoreBackup(name)
+      if (r.ok && wasRunning) await restartServer(onServerExit)
+      return r
+    }
+    const r = await restoreBackup(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   },
   deleteBackup: (name) => deleteBackupFile(name),
+  // ---------- v0.2.0：WSL 后端 ----------
+  backendInfo: () => buildBackendInfo(),
+  backendSetMode: async (mode: BackendMode) => {
+    const info = await buildBackendInfo()
+    if (mode !== 'local' && mode !== 'wsl') return { ...info, error: '非法后端模式' }
+    if (isRunning() || wslIsRunning()) return { ...info, error: '服务运行中，请先停止再切换后端' }
+    if (mode === 'wsl' && !loadSettings().wslDistro) return { ...info, error: 'WSL 后端未部署，请先一键部署' }
+    saveSettings({ backend: mode })
+    broadcastStatus()
+    return buildBackendInfo()
+  },
+  backendSetDistro: async (distro: string) => {
+    const info = await buildBackendInfo()
+    if (!validateIpcArg(distro) || !VALID_DISTRO_RE.test(distro)) return { ...info, error: '发行版名称含特殊字符，暂不支持' }
+    if (isRunning() || wslIsRunning()) return { ...info, error: '服务运行中，请先停止再切换发行版' }
+    const exists = info.distros.some((d) => d.name === distro)
+    if (!exists) return { ...info, error: '发行版不存在: ' + distro }
+    const home = await wslHomeOf(distro)
+    if (!home) return { ...info, error: '发行版未就绪（可能尚未完成首次配置），请先在终端运行 wsl -d ' + distro }
+    saveSettings({ backend: 'wsl', wslDistro: distro, wslHome: home })
+    broadcastStatus()
+    return buildBackendInfo()
+  },
+  backendSetup: (distro: string) => runBackendSetup(distro),
+  backendInstallDistro: async (name: string) => {
+    if (!validateIpcArg(name) || !VALID_DISTRO_RE.test(name)) return { ok: false, message: '非法发行版名' }
+    try {
+      // 经 PowerShell 触发 UAC 提权安装（wsl --install -d <name>），安装后需用户完成首次配置
+      const child = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `Start-Process wsl.exe -ArgumentList '--install','-d','${name}' -Verb RunAs`],
+        { detached: true, stdio: 'ignore', windowsHide: true }
+      )
+      child.unref()
+      pushLog(`请求安装 WSL 发行版 ${name}（UAC）`)
+      return { ok: true, message: '已请求安装（可能弹出 UAC 确认窗口），安装完成后请回到此处刷新并部署' }
+    } catch (e) {
+      return { ok: false, message: '请求安装失败: ' + (e as Error).message }
+    }
+  },
+  backendDiagnose,
+  backendForceCleanup: async () => {
+    const ok = await forceCleanupWsl()
+    broadcastStatus()
+    return { ok, message: ok ? '已清理残留进程' : '清理失败，请手动处理（见日志）' }
+  },
+  // ---------- v0.2.0：文件桥 ----------
+  fsbList: (side: FsSide, path: string) => {
+    if (!validateIpcArg(path)) return Promise.reject(new Error('非法路径参数'))
+    try {
+      return Promise.resolve(fsbList(side, path))
+    } catch (e) {
+      return Promise.reject(e)
+    }
+  },
+  fsbTransfer: (jobs: FsTransferRequest[]) => {
+    if (!Array.isArray(jobs)) return Promise.reject(new Error('非法传输参数'))
+    for (const j of jobs) {
+      if (!j || typeof j.id !== 'string' || !validateIpcArg(j.srcPath) || !validateIpcArg(j.dstPath)) {
+        return Promise.reject(new Error('非法传输参数'))
+      }
+    }
+    fsbEnqueue(jobs, (p) => broadcastFsbProgress(p))
+    return Promise.resolve()
+  },
+  fsbCancel: (id: string) => {
+    if (typeof id === 'string' && id) fsbCancel(id)
+    return Promise.resolve()
+  },
+  fsbRemove: (side: FsSide, path: string) =>
+    validateIpcArg(path) ? Promise.resolve(fsbRemove(side, path)) : Promise.reject(new Error('非法路径参数')),
+  fsbRename: (side: FsSide, path: string, newName: string) =>
+    validateIpcArg(path) && validateIpcArg(newName, 255)
+      ? Promise.resolve(fsbRename(side, path, newName))
+      : Promise.reject(new Error('非法参数')),
+  fsbMkdir: (side: FsSide, path: string) =>
+    validateIpcArg(path) ? Promise.resolve(fsbMkdir(side, path)) : Promise.reject(new Error('非法路径参数')),
+  fsbTranslate: (path: string) =>
+    validateIpcArg(path) ? fsbTranslate(path) : Promise.reject(new Error('非法路径参数')),
+  fsbOpen: (side: FsSide, path: string, terminal?: boolean) =>
+    validateIpcArg(path) ? fsbOpen(side, path, terminal) : Promise.reject(new Error('非法路径参数')),
   quit: () => {
     quitting = true
     app.quit()
   },
-  isRunning
+  isRunning: () => isRunning() || wslIsRunning()
 }
 
 // ---------- 启动流程 ----------
