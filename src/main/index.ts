@@ -19,8 +19,9 @@ import { iconPath } from './paths'
 import {
   bashQuote, currentDistro, hasSetsid, listDistros, pingDistro, runWsl, runWslBash, runWslGlobal, toUnc,
   validateIpcArg, VALID_DISTRO_RE, wslDshHomeLinux, wslDshHomeWindows,
-  wslHomeOf, wslVersion, kernelVersion, wslNodeBin
+  wslHomeOf, wslVersion, kernelVersion, wslNodeBin, wslWorkspaceLinux
 } from './wsl'
+import { migrateSessionCwds } from './session-cwd-migrate'
 import {
   cancelTransfer as fsbCancel, enqueueTransfer as fsbEnqueue, listEntries as fsbList,
   mkdirEntry as fsbMkdir, openEntry as fsbOpen, removeEntry as fsbRemove,
@@ -581,6 +582,23 @@ async function syncFromWindows(emit?: (msg: string) => void, allowUac = false): 
   } catch (e) {
     // 配置层复制失败才视为同步失败（不影响已复制部分）
     return { ok: false, message: '同步失败: ' + (e as Error).message }
+  }
+  // 会话 cwd 适配（v0.2.1 缺陷修复）：Windows 侧会话 header.cwd 是 Windows 路径
+  // （如 D:\ai\测试），dsh 的 workspace 挂载要求 cwd 解析为真实目录且等于工作区，
+  // 否则同步来的会话在 WSL 内不可见。复制后把 cwd 改写为 WSL 工作区路径并迁移
+  // 会话目录到匹配的 projectKey 目录（Windows 侧原始数据不动）。best-effort：
+  // 失败仅记日志，不阻断同步与服务启动。
+  try {
+    const ws = wslWorkspaceLinux()
+    const wslSessions = wslDshHomeWindows()
+    if (ws && wslSessions && existsSync(join(wslSessions, 'sessions'))) {
+      const st = await migrateSessionCwds(join(wslSessions, 'sessions'), ws)
+      if (st.rewritten > 0 || st.failed.length > 0) {
+        log(`会话 cwd 适配 WSL 工作区（${ws}）：改写 ${st.rewritten}，迁移 ${st.moved}，跳过 ${st.skipped}${st.failed.length ? '，失败 ' + st.failed.length + '：' + st.failed.join('；') : ''}`)
+      }
+    }
+  } catch (e) {
+    pushLog('同步: 会话 cwd 适配失败: ' + (e as Error).message)
   }
   // 插件依赖重建（尽力而为：失败不阻断，服务可直接启动，稍后可手动重试）
   log('WSL 内 pnpm install 重建插件依赖（平台正确）…')

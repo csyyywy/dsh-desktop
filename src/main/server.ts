@@ -12,8 +12,8 @@ import { dshHome, loadSettings, windowsApiKey } from './settings'
 import { pushLog } from './log'
 import {
   bashQuote, checkLocalhostForwarding, checkWinPortFree, currentDistro, hasSetsid,
-  pidAlive, readPidfile, runWslBash, validateLinuxPath,
-  wslDshBinLinux, wslDshBinWindows, wslDshHomeLinux, wslLogfileLinux, wslNodeBin, wslPidfileLinux
+  pidAlive, readPidfile, runWslBash,
+  wslDshBinLinux, wslDshBinWindows, wslDshHomeLinux, wslLogfileLinux, wslNodeBin, wslPidfileLinux, wslWorkspaceLinux
 } from './wsl'
 
 let proc: ChildProcess | null = null
@@ -140,8 +140,9 @@ async function startWslServer(): Promise<void> {
   const port = settings.wslPort || 3081
   const err = await preflightWsl(port)
   if (err) throw new Error(err)
-  // 工作区：settings.workspace 为空或非法时回退发行版 HOME
-  const ws = settings.workspace && validateLinuxPath(settings.workspace) ? settings.workspace : settings.wslHome
+  // 工作区：与会话 cwd 适配共用同一解析（settings.workspace 或 wslHome）
+  const ws = wslWorkspaceLinux()
+  if (!ws) throw new Error('WSL 工作区未配置')
   pushLog(`启动 WSL dsh: ${node} ${bin} --profile web --port ${port}（${distro}）`)
   // 关键坑（PoC 实测）：wsl 的 bash 是进程组长 → setsid 必然 fork → `$!` 是已退出的
   // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其

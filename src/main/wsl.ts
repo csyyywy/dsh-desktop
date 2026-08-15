@@ -288,6 +288,15 @@ export function wslBaseLinux(): string | null {
   return h ? `${h}/.dsh-desktop` : null
 }
 
+/** WSL 后端工作区：settings.workspace（合法 Linux 绝对路径）优先，否则回退 wslHome。
+ *  dsh 启动时 cd 到这里（server.ts），会话 cwd 适配（session-cwd-migrate）也必须
+ *  指向同一路径——否则同步来的会话挂载校验（cwd == workspace）仍会失败。 */
+export function wslWorkspaceLinux(): string | null {
+  const s = loadSettings()
+  if (s.workspace && validateLinuxPath(s.workspace)) return s.workspace
+  return wslHomeDir()
+}
+
 /** Windows 侧 UNC 形态的数据根 */
 export function wslBaseWindows(): string | null {
   const d = currentDistro()

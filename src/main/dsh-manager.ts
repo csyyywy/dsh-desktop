@@ -242,5 +242,31 @@ export function installDshWsl(
   // export PATH：npm 的 postinstall 脚本（koffi/node-pty 等）用 `sh -c node`，
   // 发行版 PATH 必须包含我们的 Linux Node（冒烟实测：缺了会 node: not found）
   const script = `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${args.map(bashQuote).join(' ')}`
-  return runWslBash(script, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then((r) => r.code)
+  return runWslBash(script, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then(async (r) => {
+    if (r.code !== 0) return r.code
+    // v0.2.1 兼容性修复：全局安装 + PATH 固化，保证 WSL 终端可直接敲 `dsh`。
+    // 应用内部用 --prefix 布局（绝对路径调用），全局布局（<base>/node/bin/dsh）
+    // 供用户终端/harness 使用——两者版本一致、互不干扰。best-effort：失败只记
+    // 日志，不影响应用内置 dsh 的可用性。
+    const gargs = [node, npmCli, 'install', '-g', '--no-audit', '--no-fund']
+    if (registry) gargs.push('--registry', registry)
+    gargs.push(target)
+    // PATH 固化（幂等）：发行版用户 .bashrc/.profile 追加 node/bin。
+    // grep 用子串 `dsh-desktop/node/bin` 匹配——兼容既有 `$HOME` 变量形式与
+    // 绝对路径形式，避免重复追加；echo 单引号内容保持字面 $PATH，由 bashrc 加载时展开。
+    const bashrcLine = `grep -qF 'dsh-desktop/node/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="${base}/node/bin:$PATH"' >> "$HOME/.bashrc"`
+    const profileLine = `grep -qF 'dsh-desktop/node/bin' "$HOME/.profile" 2>/dev/null || echo 'export PATH="${base}/node/bin:$PATH"' >> "$HOME/.profile"`
+    const gscript = [
+      `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${gargs.map(bashQuote).join(' ')}`,
+      bashrcLine,
+      profileLine
+    ].join('; ')
+    const gr = await runWslBash(gscript, { timeoutMs: 10 * 60 * 1000, onLine, distro })
+    if (gr.code !== 0) {
+      pushLog('WSL 全局 dsh 安装/PATH 固化失败（不影响应用内置 dsh）: ' + (gr.stderr || gr.stdout).trim())
+    } else {
+      pushLog('WSL 全局 dsh 已就绪，终端可直接使用 `dsh`（PATH 已固化到 .bashrc/.profile）')
+    }
+    return r.code
+  })
 }
