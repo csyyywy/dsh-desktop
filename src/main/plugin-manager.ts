@@ -290,6 +290,27 @@ async function fetchRepoNpmName(repo: string): Promise<string | null> {
   return null
 }
 
+/** 检查已安装包的真实性：pnpm 对仓库根目录没有 package.json 的 git 仓库，会生成占位 package.json */
+function inspectInstalled(
+  dir: string,
+  name: string
+): { placeholder: boolean; bundle: boolean; entry: boolean; installScript: boolean } {
+  const empty = { placeholder: false, bundle: false, entry: false, installScript: false }
+  try {
+    const pkgPath = join(dir, 'node_modules', name, 'package.json')
+    if (!existsSync(pkgPath)) return empty
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    return {
+      placeholder: pkg._pnpmPlaceholder !== undefined,
+      bundle: pkg.dsh?.bundle?.patch !== undefined,
+      entry: Boolean(pkg.main || pkg.exports || pkg.bin),
+      installScript: existsSync(join(dir, 'node_modules', name, 'install.ps1'))
+    }
+  } catch {
+    return empty
+  }
+}
+
 /** 精准放行某个包的构建脚本（写入 profile 的 pnpm.onlyBuiltDependencies） */
 function allowBuild(pkgName: string): void {
   const pkgPath = join(profileDir(), 'package.json')
@@ -336,7 +357,20 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
   }
   const resolved = findNpmNameByRepo(spec) ?? npmName ?? spec
   reconcileBundles(profileDir(), [resolved], [])
-  return { ok: true, message: `已安装 ${spec}` }
+  // pnpm 对没有 package.json 的 git 仓库会"成功"但只生成占位包 —— 检测出来并明确报错，避免静默无效
+  const info = inspectInstalled(profileDir(), resolved)
+  if (info.placeholder) {
+    const hint = info.installScript
+      ? '仓库含 install.ps1，属于「套装/脚本安装」型仓库（依赖 submodule + 安装脚本），不能直接 pnpm 安装。'
+      : '仓库根目录没有 package.json，pnpm 只能装出占位包。'
+    return {
+      ok: false,
+      message: `「${spec}」已写进依赖，但 ${resolved} 不是可安装的 npm/git 包（${hint}）dsh 不会加载它。请改用 npm 包名安装，或在列表中卸载它。`
+    }
+  }
+  if (info.bundle) return { ok: true, message: `已安装 ${spec}，已注册为 bundle（服务自动重启后生效）` }
+  if (!info.entry) return { ok: true, message: `已安装 ${spec}，但该包没有 main/exports 入口，需确认是否可被 dsh 加载` }
+  return { ok: true, message: `已安装 ${spec}（未声明 dsh.bundle，需在 cordis.patch.yml 里手动启用）` }
 }
 
 export async function uninstallPlugin(name: string): Promise<PluginOpResult> {
