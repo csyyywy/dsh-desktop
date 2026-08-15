@@ -311,13 +311,27 @@ function inspectInstalled(
   }
 }
 
-/** 从 pnpm 输出的 ERR_PNPM_IGNORED_BUILDS 里解析被拦截的包名（如 cloudflared@0.7.3） */
+/** 把被拦截的一个 token 转成 allowBuilds 的 key。
+ *  普通包：`cloudflared@0.7.3` → `cloudflared`；
+ *  git 依赖：`@scope/name@git+https://...git#commit` → `@scope/name@git+https://...git`
+ *  （pnpm 用 `getGitRepoAllowBuildKeyFromDepPath` 匹配，key 带 @name@ 前缀、去掉 #commit）。 */
+function ignoredBuildKey(token: string): string {
+  const t = token.trim()
+  if (t.includes('@git+') || t.startsWith('git+')) {
+    const hashIdx = t.indexOf('#')
+    return hashIdx === -1 ? t : t.slice(0, hashIdx)
+  }
+  const m = /^(@?[^\s@]+)@\d/.exec(t)
+  return m ? m[1] : t
+}
+
+/** 从 pnpm 输出的 ERR_PNPM_IGNORED_BUILDS 里解析被拦截的包名（如 cloudflared@0.7.3 或 git 依赖） */
 function parseIgnoredBuilds(output: string): string[] {
   if (!/ERR_PNPM_IGNORED_BUILDS/.test(output)) return []
   const line = output.match(/Ignored build scripts:\s*(.+)/)?.[1]
   if (!line) return []
-  const names = [...line.matchAll(/(@?[^\s,@]+)@\d[^\s,]*/g)].map((m) => m[1])
-  return [...new Set(names.filter(Boolean))]
+  const tokens = line.split(',').map(ignoredBuildKey).filter(Boolean)
+  return [...new Set(tokens)]
 }
 
 /** YAML key 需要加引号的情形：@ 开头（scoped 包名）或含特殊字符。
