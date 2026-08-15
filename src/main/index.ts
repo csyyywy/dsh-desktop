@@ -133,16 +133,22 @@ function createMain(): BrowserWindow {
   return win
 }
 
+/** 主窗口目标 URL（按当前后端端口动态计算） */
+function mainTargetUrl(): string {
+  return `http://127.0.0.1:${webPort()}`
+}
+
 /**
  * 主窗口重新导航到当前后端端口（不是原地 reload！）。
  * 关键坑（用户实测）：窗口 URL 是创建时写死的——本机模式为 3080，
  * 切到 WSL（3081）后原地 reload 仍请求旧端口 → 连接失败 → 窗口空白；
- * 必须重新 loadURL(当前 webPort())。
+ * 必须重新 loadURL(当前 webPort())。服务未运行时不动窗口（等下次启动/打开）。
  */
 function reloadMain(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  if (!isRunning() && !wslIsRunning()) return
   webUIStale = false
-  void mainWindow.loadURL(`http://127.0.0.1:${webPort()}`)
+  void mainWindow.loadURL(mainTargetUrl())
 }
 
 function openMain(): void {
@@ -155,8 +161,10 @@ function openMain(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createMain()
   } else {
-    // 服务重启过则刷新旧窗口，避免从托盘打开时仍是过期页面
-    if (webUIStale) {
+    // 服务重启过（webUIStale）或手动改了端口/后端导致 URL 与当前端口不一致时，
+    // 重新导航（用户诉求：URL 随手动选择的窗口/端口变动）
+    const cur = mainWindow.webContents.getURL()
+    if (webUIStale || !cur.startsWith(mainTargetUrl())) {
       reloadMain()
     }
     mainWindow.show()
