@@ -67,13 +67,13 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 
 **v0.1.5（测试中）**：插件备份删除（`plugins:deleteBackup`，备份名白名单 `\d{8}-\d{6}` 防路径穿越 + 面板每行删除按钮）+ 自更新版本比较改语义化（仅 latest > current 才提示，防测试版被误判降级）。测试包经 `-c <完整配置副本>.yml` + `directories.output` 输出到独立目录（注意：electron-builder 26 的 `-c` 是**替换**配置而非合并，缺失 files/extraResources 会把整个项目打进 asar——8.2GB asar 事故）。
 
-**v0.2.0（已发布 2026-08-16）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。本机已装 Ubuntu2404（用户 dsh，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。**实测修复链**：①WSL 独立端口 `wslPort`（默认 3081）；②启动互斥 + 健康探测验证 dsh 响应；③文件桥盘符根 + localStorage 位置记忆；④「从本机同步插件与数据」→ WSL（配置层 + pnpm 重建，失败自动降级标准默认组合）；⑤`.credentials.yaml` 在 WSL 内致 dsh 启动卡死 → 启动前移走 + API Key env 注入；⑥降级 package.json 必须用 dsh 标准形态（`dsh-profile-web` + dsh-base/dsh-web-app bundles，空壳会卡死）；⑦主窗口 URL 动态随端口/后端重导航（openMain URL 比较 + reloadMain）；⑧WSL 启动后主窗口不弹（openMain 守卫适配 wslIsRunning）。
+**v0.2.0（已发布 2026-08-16）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。已在真实发行版（Ubuntu，默认用户，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。**实测修复链**：①WSL 独立端口 `wslPort`（默认 3081）；②启动互斥 + 健康探测验证 dsh 响应；③文件桥盘符根 + localStorage 位置记忆；④「从本机同步插件与数据」→ WSL（配置层 + pnpm 重建，失败自动降级标准默认组合）；⑤`.credentials.yaml` 在 WSL 内致 dsh 启动卡死 → 启动前移走 + API Key env 注入；⑥降级 package.json 必须用 dsh 标准形态（`dsh-profile-web` + dsh-base/dsh-web-app bundles，空壳会卡死）；⑦主窗口 URL 动态随端口/后端重导航（openMain URL 比较 + reloadMain）；⑧WSL 启动后主窗口不弹（openMain 守卫适配 wslIsRunning）。
 
 ---
 
 ## 3. 本机环境（接手者必须知道）
 
-- **Windows 11**（bash = Git Bash）。路径含中文（`d:\ai\测试\...`），写脚本注意编码。
+- **Windows 11**（bash = Git Bash）。工作目录路径可能含中文/空格，写脚本注意编码与引号。
 - **自定义 CA 代理**：Node 的 fetch/https 会抛 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`。
   → **所有外部 HTTP 请求一律走系统 `curl`**（见 `src/main/net.ts` 的 `curlJson`，`spawn('curl', ...)`）。不要再引入 fetch。
 - 系统全局 node = v26；**应用自带** `resources/node/node.exe`（v22.21.1）和 `resources/pnpm`（11.21.0）。构建期用自带 node/pnpm 保持一致。
@@ -99,7 +99,7 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
   - **git 依赖的 key 格式**：`"@name@git+https://...git"` —— 带 `@name@` 前缀、去掉 `#commit`、加引号。pnpm 用 `getGitRepoAllowBuildKeyFromDepPath` 匹配（name 匹配对 git 依赖无效，因 trustPackageIdentity 为 false）。见 `ignoredBuildKey()`。
   - package.json 里 `pnpm.onlyBuiltDependencies` 已被 pnpm 11 **忽略**（构建时会有 WARN），别依赖它。
 - **minimumReleaseAge**：pnpm 11 默认拦截「太新」的包（防供应链攻击）→ 常把包钉到旧版（如 dsh-better-sidebar 首装成 0.11.0）。对策：显式装版本号 `pnpm add pkg@x.y.z`，或让 pnpm 自动写 `minimumReleaseAgeExclude`。
-- **两个 dsh 世界（重要）**：裸 `dsh` 命令默认 `DSH_HOME=~/.dsh`；应用用 `%AppData%\dsh-desktop\dsh-home`。用 CLI 管理**应用**的插件必须 `DSH_HOME="C:\Users\1\AppData\Roaming\dsh-desktop\dsh-home" dsh plugin --profile web add ...`，或用应用插件面板。用户已踩过（装进 `~/.dsh` 应用看不到）。
+- **两个 dsh 世界（重要）**：裸 `dsh` 命令默认 `DSH_HOME=~/.dsh`；应用用 `%APPDATA%\dsh-desktop\dsh-home`。用 CLI 管理**应用**的插件必须 `DSH_HOME="<dataDir>\dsh-home" dsh plugin --profile web add ...`，或用应用插件面板。用户已踩过（装进 `~/.dsh` 应用看不到）。
 - git 装一个根目录没有 package.json 的仓库（如「套装」型：submodule + install.ps1）→ pnpm 生成占位包 → `inspectInstalled` 检测 `_pnpmPlaceholder` 并明确报错。**「套装」型仓库要按仓库自己的机制装**（如 dsh-routing-suite：clone --recurse-submodules + release tgz 装配 injector + 复制 preset 到 `$DSH_HOME/.agent-presets/<id>`），不能走 pnpm。
 - 装插件成功 → 自动 `restartForPluginChange`（重启 dsh + reload 主窗口）。
 
@@ -170,23 +170,23 @@ npm run pack:win     # 完整打包：icon → 下载 node/pnpm → 打包 dsh b
 2. 绿色版 zip：`rm -rf dist/DeepSeek\ Harness && cp -r dist/win-unpacked "dist/DeepSeek Harness"`，再用 `node_modules/electron-winstaller/vendor/7z.exe a -tzip -mx=1 "dist/DeepSeek Harness-0.1.x-win-x64.zip" "dist/DeepSeek Harness"`（zip 顶层含 `DeepSeek Harness\` 文件夹）。
 3. `gh release create v0.1.x <三个产物> --title v0.1.x --notes-file <notes>`（gh 在 `/c/Program Files/GitHub CLI/gh.exe`）。
    - 自 v0.1.4 起（publish 已配置）多传 `dist/latest.yml`；应用内自更新走 API 直取安装包，不依赖它，但上传后可选切换 electron-updater。
-4. release notes 放 `d:\ai\测试\宣传稿\release-notes-v*.md`。
+4. release notes 放本地 `release-notes-v*.md`（如 `D:\宣传稿\` 之类自定位置）。
 
 ---
 
 ## 6. 本机当前运行状态（交接时刻）
 
-- **应用**：装在 `D:\Program Files (x86)\1\DeepSeek Harness`，当前是 **20:02 测试版**（缺 F5/自动刷新）。**用户选择暂不更新**；已发布 v0.1.3（20:20）含刷新修复，另有 `f251ee2`（git 构建自动放行）未发版（可打 v0.1.4）。数据在 `C:\Users\1\AppData\Roaming\dsh-desktop`（保持现状不迁移）。
+- **应用**：安装在系统盘 `Program Files (x86)` 下某目录（测试版），数据在 `%APPDATA%\dsh-desktop`（安装版语义，保持现状不迁移）。
 - **dsh 服务状态**：当前 **stopped**（无 node 进程、3080 无监听）。Electron 壳在跑（DeepSeek Harness.exe ×5 属正常）。
 - **已装插件**（`$DSH_HOME/profiles/web`，全部已注册 bundle、`dump-config` 已合成，**均待服务重启生效**）：
   - `@linxin666/dsh-web-ui-all@0.1.12`（web UI 全家桶）
-  - `@dsh-external/dsh-super-injector@0.3.3`（注入器，link 自 `d:\ai\测试\dsh-routing-suite\release-injector\package`）
+  - `@dsh-external/dsh-super-injector@0.3.3`（注入器，link 自本地 `release-injector/package`）
   - `dsh-better-sidebar@0.12.1`（VSCode 风格侧边栏工作台；node-pty 原生模块已构建）
   - `@sanqi-normal/dsh-webui-market-plugin`（git 装，market 插件）
 - **预设**：`router-standard` 已复制到 `$DSH_HOME/.agent-presets/router-standard/`。
 - **`~/.dsh` 独立世界**：用户在 PowerShell 直接 `dsh plugin add` 建过（含 market-plugin 一份），与应用世界无关，**用户保留不清理**。
 - **待办**：重启 dsh 服务（`dev_plugin_status` 验证注入器；侧边栏应出现 better-sidebar 工作台；新会话可选 Router Standard 预设）。
-- **装注入器的来源**：`d:\ai\测试\dsh-routing-suite\release-injector\package`（从 yjh051108/dsh-super-injector v0.3.3 release tgz 解压，免构建）。套装仓库 `d:\ai\测试\dsh-routing-suite\`（含 submodule）。
+- **装注入器的来源**：本地 `release-injector/package`（从 yjh051108/dsh-super-injector v0.3.3 release tgz 解压，免构建）。套装仓库 `dsh-routing-suite/`（含 submodule，本地自维护）。
 
 ---
 
