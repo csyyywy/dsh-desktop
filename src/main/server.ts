@@ -117,16 +117,17 @@ async function startWslServer(): Promise<void> {
   // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其
   // pgid，pidfile 存 `<pid> <pgid>` 两列，停止时优先按进程组杀。
   const pattern = `@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`
+  // 注意：`&` 本身是命令分隔符，其后不能跟 `;`/`&&`（bash 语法错误），
+  // 因此 `&` 与 `sleep 1.5` 合并为同一元素；其余用 `; ` 连接
   const script = [
     `mkdir -p ${bashQuote(home)}`,
     `cd ${bashQuote(ws)}`,
-    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${settings.port} >> ${bashQuote(logfile)} 2>&1 < /dev/null &`,
-    `sleep 1.5`,
+    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${settings.port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
     // grep -vw $$：pgrep -f 会匹配运行本脚本的 bash 自身（命令行含 pattern 文本），必须排除
     `PID=$(pgrep -u $(id -un) -f ${bashQuote(pattern)} | grep -vw $$ | head -1)`,
     `PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')`,
     `echo "$PID $PGID" > ${bashQuote(pidfile)}`
-  ].join(' && ')
+  ].join('; ')
   const res = await runWslBash(script, { timeoutMs: 30000 })
   if (res.code !== 0) {
     pushLog('启动 WSL dsh 失败: ' + (res.stderr || res.stdout).trim())
