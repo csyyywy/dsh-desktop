@@ -1,5 +1,11 @@
 // 插件管理器：查看已装插件、浏览/搜索官方仓库（npm 关键字 dsh-plugin）、一键安装/卸载。
 // 安装直接调用 pnpm（node 跑 pnpm.cjs，cwd=profile 目录），再维护 dsh.profile.bundles。
+//
+// WSL 模式（v0.2.0）双路径形态，严格分离：
+//  - profileLinuxDir()：发行版内 Linux 路径，仅供 wsl.exe 命令（pnpm --dir / cp 等）；
+//  - profileDir()：返回 UNC 路径（\\wsl.localhost\<distro>\...），仅供 Windows 侧 Node fs
+//    读写（package.json / pnpm-workspace.yaml / node_modules 检查）。
+// 严禁混用：pnpm 在 WSL 内只认 Linux 路径，Windows 侧 fs 只认 UNC。
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -8,12 +14,25 @@ import { resolveRuntime } from './dsh-manager'
 import { dataDir, dshHome, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
+import { currentDistro, runWsl, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin } from './wsl'
 import type { PluginInfo, PluginOpResult } from '../shared/types'
 
 const PROFILE = 'web'
 
+/** profile 目录：WSL 模式 = UNC（Windows 侧 fs 用），本机 = Windows 路径 */
 function profileDir(): string {
+  if (loadSettings().backend === 'wsl') {
+    const d = currentDistro()
+    const l = profileLinuxDir()
+    return d && l ? toUnc(d, l) : join(dshHome(), 'profiles', PROFILE)
+  }
   return join(dshHome(), 'profiles', PROFILE)
+}
+
+/** profile 目录（发行版内 Linux 路径，仅供 wsl.exe 命令） */
+function profileLinuxDir(): string | null {
+  const home = wslDshHomeLinux()
+  return home ? `${home}/profiles/${PROFILE}` : null
 }
 
 function pnpmCjsPath(): string {
@@ -22,14 +41,22 @@ function pnpmCjsPath(): string {
     : join(app.getAppPath(), 'resources', 'pnpm', 'bin', 'pnpm.cjs')
 }
 
-function runPnpm(args: string[]): Promise<{ code: number; output: string }> {
+async function runPnpm(args: string[]): Promise<{ code: number; output: string }> {
+  const dir = profileDir()
+  if (!existsSync(join(dir, 'package.json'))) {
+    return { code: 1, output: '配置目录尚未初始化，请先启动一次服务' }
+  }
+  if (loadSettings().backend === 'wsl') {
+    const node = wslNodeBin()
+    const pnpm = wslPnpmCjs()
+    const linuxDir = profileLinuxDir()
+    if (!node || !pnpm || !linuxDir) return { code: 1, output: 'WSL 后端未部署（缺少 node/pnpm）' }
+    pushLog(`$ wsl pnpm ${args.join(' ')}`)
+    const res = await runWsl([node, pnpm, '--dir', linuxDir, ...args], { timeoutMs: 10 * 60 * 1000 })
+    return { code: res.code, output: res.stdout + res.stderr }
+  }
   return new Promise((resolve) => {
     const rt = resolveRuntime()
-    const dir = profileDir()
-    if (!existsSync(join(dir, 'package.json'))) {
-      resolve({ code: 1, output: '配置目录尚未初始化，请先启动一次服务' })
-      return
-    }
     pushLog(`$ pnpm ${args.join(' ')}`)
     const child = spawn(rt.node, [pnpmCjsPath(), ...args], {
       cwd: dir,
@@ -85,8 +112,20 @@ function reconcileBundles(dir: string, added: string[], removed: string[]): void
   }
 }
 
+/** 备份目录：WSL 模式 = 发行版内 backups（UNC 形态），本机 = dataDir/backups/plugins */
 function backupsDir(): string {
+  if (loadSettings().backend === 'wsl') {
+    const d = currentDistro()
+    const base = wslBaseLinux()
+    return d && base ? toUnc(d, `${base}/backups/plugins`) : join(dataDir(), 'backups', 'plugins')
+  }
   return join(dataDir(), 'backups', 'plugins')
+}
+
+/** 备份目录（发行版内 Linux 路径，wsl cp/rm 回退用） */
+function backupsLinuxDir(): string | null {
+  const base = wslBaseLinux()
+  return base ? `${base}/backups/plugins` : null
 }
 
 function timestamp(): string {
@@ -104,8 +143,12 @@ function pruneBackups(): void {
   }
 }
 
-/** 安装/卸载前把整个 profile 目录快照到 backups/plugins/<时间戳> */
-function backupProfile(): void {
+/**
+ * 安装/卸载前把整个 profile 目录快照到 backups/plugins/<时间戳>。
+ * 调用方（controller）保证：WSL 模式下服务已停止后再调用（原子性）。
+ * UNC cpSync 失败时回退发行版内 wsl cp -r。
+ */
+async function backupProfile(): Promise<void> {
   const dir = profileDir()
   if (!existsSync(join(dir, 'package.json'))) return
   const name = timestamp()
@@ -114,7 +157,16 @@ function backupProfile(): void {
   try {
     cpSync(dir, dest, { recursive: true })
   } catch (e) {
-    pushLog('备份 profile 失败: ' + (e as Error).message)
+    pushLog('备份 profile（UNC）失败: ' + (e as Error).message)
+    const linuxDir = profileLinuxDir()
+    const linuxDest = backupsLinuxDir()
+    if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
+      // 回退：发行版内直接 cp
+      const res = await runWsl(['bash', '-lc', `mkdir -p ${linuxDest} && cp -r ${linuxDir} ${linuxDest}/${name}`], { silent: true })
+      if (res.code !== 0) pushLog('备份 profile（wsl cp）失败: ' + (res.stderr || res.stdout).trim())
+    } else {
+      pushLog('备份 profile 失败: ' + (e as Error).message)
+    }
   }
   pruneBackups()
 }
@@ -141,7 +193,7 @@ export function deleteBackup(name: string): PluginOpResult {
   return { ok: true, message: `已删除备份 ${name}` }
 }
 
-export function restoreBackup(name: string): PluginOpResult {
+export async function restoreBackup(name: string): Promise<PluginOpResult> {
   const src = join(backupsDir(), name)
   const dir = profileDir()
   if (!existsSync(src)) return { ok: false, message: '备份不存在' }
@@ -150,6 +202,15 @@ export function restoreBackup(name: string): PluginOpResult {
     mkdirSync(dir, { recursive: true })
     cpSync(src, dir, { recursive: true })
   } catch (e) {
+    // UNC 失败回退发行版内操作
+    const linuxDir = profileLinuxDir()
+    const linuxSrc = backupsLinuxDir()
+    if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
+      const res = await runWsl(['bash', '-lc', `rm -rf ${linuxDir} && mkdir -p ${linuxDir} && cp -r ${linuxSrc}/${name} ${linuxDir}`], { silent: true })
+      return res.code === 0
+        ? { ok: true, message: `已回退到 ${name}` }
+        : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }
+    }
     return { ok: false, message: '回退失败: ' + (e as Error).message }
   }
   return { ok: true, message: `已回退到 ${name}` }
@@ -409,7 +470,7 @@ function allowBuild(pkgName: string): void {
 
 export async function installPlugin(spec: string, source: string = 'github'): Promise<PluginOpResult> {
   searchCache = null
-  backupProfile()
+  await backupProfile()
   let pnpmSpec: string
   let npmName: string | null = null
   if (source === 'npm') {
@@ -463,7 +524,7 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
 
 export async function uninstallPlugin(name: string): Promise<PluginOpResult> {
   searchCache = null
-  backupProfile()
+  await backupProfile()
   const { code, output } = await runPnpm(['remove', name])
   if (code !== 0) {
     const last = output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')

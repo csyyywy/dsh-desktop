@@ -12,7 +12,11 @@ const DEFAULTS: AppSettings = {
   theme: 'dark',
   appUpdateRepo: 'csyyywy/dsh-desktop',
   background: 'radial-gradient(140% 140% at 10% -10%, #1b2547 0%, #0b1020 55%, #0a0d18 100%)',
-  githubToken: ''
+  githubToken: '',
+  backend: 'local',
+  wslDistro: '',
+  wslHome: '',
+  npmRegistry: ''
 }
 
 /** 是否为便携/绿色版（数据目录紧邻 exe），而不是安装版（数据在 userData） */

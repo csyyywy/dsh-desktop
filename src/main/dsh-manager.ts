@@ -4,9 +4,10 @@ import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { dataDir } from './settings'
+import { dataDir, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
+import { currentDistro, runWsl, toUnc, wslBaseLinux, wslDshBinLinux, wslNpmCli, wslNodeBin } from './wsl'
 
 export interface Runtime {
   node: string
@@ -163,4 +164,76 @@ export function runNpm(args: string[], onLine?: (line: string) => void): Promise
 export function installDsh(version: string, onLine?: (line: string) => void): Promise<number> {
   const target = version === 'latest' ? '@deepseek-ai/dsh@latest' : `@deepseek-ai/dsh@${version}`
   return runNpm(['install', '--prefix', dataDir(), '--no-audit', '--no-fund', target], onLine)
+}
+
+// ---------- WSL 分支（v0.2.0） ----------
+
+/** 内置 bundle 的 dsh 版本（构建期固化；WSL 首次部署/无参更新时与外壳配套） */
+export function bundledDshVersion(): string | null {
+  try {
+    const p = join(bundledDshDir(), 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+    return JSON.parse(readFileSync(p, 'utf8')).version ?? null
+  } catch {
+    return null
+  }
+}
+
+/** WSL 内是否已安装 dsh（bin.js 存在性，UNC 只读检查） */
+export function wslIsInstalled(): boolean {
+  const d = currentDistro()
+  const p = wslDshBinLinux()
+  return !!(d && p && existsSync(toUnc(d, p)))
+}
+
+/** WSL 内 dsh 依赖树是否完整（哨兵包，UNC 只读检查） */
+export function wslIsComplete(): boolean {
+  if (!wslIsInstalled()) return false
+  const d = currentDistro()
+  const base = wslBaseLinux()
+  if (!d || !base) return false
+  for (const pkg of REQUIRED_PKGS) {
+    if (!existsSync(toUnc(d, `${base}/node_modules/${pkg}/package.json`))) return false
+  }
+  return true
+}
+
+/** WSL 内已安装的 dsh 版本（UNC 读 package.json） */
+export function wslInstalledVersion(): string | null {
+  const d = currentDistro()
+  const base = wslBaseLinux()
+  if (!d || !base) return null
+  try {
+    const p = toUnc(d, `${base}/node_modules/@deepseek-ai/dsh/package.json`)
+    return JSON.parse(readFileSync(p, 'utf8')).version ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * WSL 内安装/升级/回滚 dsh（发行版内 Linux Node 跑 npm-cli）。
+ * 注意：必须走发行版内 npm（win32 的内置 bundle/sharp 二进制不通用）。
+ * opts 用于部署流程（此时 settings.backend/wslHome 尚未切换），
+ * 常规运行（backend 已切到 wsl）可省略。
+ */
+export function installDshWsl(
+  version: string,
+  onLine?: (line: string) => void,
+  opts: { distro?: string; home?: string } = {}
+): Promise<number> {
+  const distro = opts.distro ?? currentDistro()
+  const base = (opts.home ? `${opts.home}/.dsh-desktop` : null) ?? wslBaseLinux()
+  const node = base ? `${base}/node/bin/node` : null
+  const npmCli = base ? `${base}/node/lib/node_modules/npm/bin/npm-cli.js` : null
+  if (!distro || !node || !npmCli || !base) {
+    pushLog('WSL 后端未部署（缺少 node/npm），无法安装 dsh')
+    return Promise.resolve(1)
+  }
+  const target = version === 'latest' ? '@deepseek-ai/dsh@latest' : `@deepseek-ai/dsh@${version}`
+  const args = [node, npmCli, 'install', '--prefix', base, '--no-audit', '--no-fund']
+  const registry = loadSettings().npmRegistry
+  if (registry) args.push('--registry', registry)
+  args.push(target)
+  pushLog(`$ wsl npm install ${target}`)
+  return runWsl(args, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then((r) => r.code)
 }
