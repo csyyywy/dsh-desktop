@@ -2,7 +2,7 @@
 
 > 本文档供接续开发者 / agent 接手 **dsh-desktop** 项目使用。
 > 记录了项目现状、本机环境、关键机制与踩过的坑。
-> 最后更新：2026-08-15（v0.1.4 开发中：应用自更新落地）。
+> 最后更新：2026-08-15（v0.1.4 发布后）。
 
 ---
 
@@ -63,7 +63,9 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - 内置 dsh bundle（`resources/dsh-bundle`）在构建期 npm install 打包，版本随构建固化；应用「更新 dsh」走在线 npm 安装。
 - `dsh.profile.bundles` 的插件装配只在 dsh 启动时生效，HMR 不处理新增 bundle 层 → 装插件必须重启服务（已由 `restartForPluginChange` 自动做）。
 
-**v0.1.4（开发中）**：`f251ee2`（git 依赖构建自动放行，此前未发版）+ 应用自更新（§4.6）。注意：本地 main 曾领先 origin/main 8 个提交未推送、无 tag，发布前先 push + 打 tag。
+**v0.1.4（已发布 2026-08-15）**：`f251ee2`（git 依赖构建自动放行，v0.1.3 未含）+ 应用自更新（§4.6）。Release 附带 `latest.yml`。
+
+**v0.1.5（测试中）**：插件备份删除（`plugins:deleteBackup`，备份名白名单 `\d{8}-\d{6}` 防路径穿越 + 面板每行删除按钮）+ 自更新版本比较改语义化（仅 latest > current 才提示，防测试版被误判降级）。测试包经 `-c <完整配置副本>.yml` + `directories.output` 输出到独立目录（注意：electron-builder 26 的 `-c` 是**替换**配置而非合并，缺失 files/extraResources 会把整个项目打进 asar——8.2GB asar 事故）。
 
 ---
 
