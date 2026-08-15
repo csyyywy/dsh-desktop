@@ -50,6 +50,7 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 
 | 提交 | 内容 |
 |---|---|
+| `f251ee2` | `parseIgnoredBuilds` 支持 git 依赖的构建拦截 key（`@name@git+url#commit`）→ 应用内 git 插件也能自动放行 |
 | `c0b6f10` | 主窗口 F5/Ctrl+R 刷新 + 托盘重开自动刷新过期页面（webUIStale 标记）|
 | `8e984e1` | 插件变更重启 dsh 后自动刷新主窗口 |
 | `5df2127` | `allowBuilds` 中 scoped 包名（`@` 开头）加引号，否则 YAML 解析失败 |
@@ -87,9 +88,13 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - 插件装到 `$DSH_HOME/profiles/web`（profile），`pnpm add` 写 `package.json` 依赖。
 - **bundle 机制**：包声明 `dsh.bundle.patch` 才算可激活 profile 层 → `reconcileBundles` 把包名写进 `pkg.dsh.profile.bundles`，dsh 启动时按序合成（`cordis.yml` 是占位，运行时合成不落盘；用 `dsh web --dump-config` 查合成结果）。
 - **pnpm 11 默认拦截依赖构建脚本** → `ERR_PNPM_IGNORED_BUILDS`（致命，exit 1）。修复：解析被拦包名，写入 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds: {name: true}`，重试最多 3 轮。
+  - **`allowBuilds` 是「开关」**：一旦定义了 `allowBuilds`（哪怕只有几条），pnpm 进入**严格模式**——任何未批准的构建脚本都是致命错误；反之（完全没有 `allowBuilds` 段）pnpm 是宽松模式，只警告不失败（`~/.dsh` 那种环境就因此装 git 包不报错）。
   - `@scope/pkg` 这类 key 必须加引号：`"@scope/pkg": true`（`yamlKey()`）。
+  - **git 依赖的 key 格式**：`"@name@git+https://...git"` —— 带 `@name@` 前缀、去掉 `#commit`、加引号。pnpm 用 `getGitRepoAllowBuildKeyFromDepPath` 匹配（name 匹配对 git 依赖无效，因 trustPackageIdentity 为 false）。见 `ignoredBuildKey()`。
   - package.json 里 `pnpm.onlyBuiltDependencies` 已被 pnpm 11 **忽略**（构建时会有 WARN），别依赖它。
-- git 装一个根目录没有 package.json 的仓库（如「套装」型：submodule + install.ps1）→ pnpm 生成占位包 → `inspectInstalled` 检测 `_pnpmPlaceholder` 并明确报错。
+- **minimumReleaseAge**：pnpm 11 默认拦截「太新」的包（防供应链攻击）→ 常把包钉到旧版（如 dsh-better-sidebar 首装成 0.11.0）。对策：显式装版本号 `pnpm add pkg@x.y.z`，或让 pnpm 自动写 `minimumReleaseAgeExclude`。
+- **两个 dsh 世界（重要）**：裸 `dsh` 命令默认 `DSH_HOME=~/.dsh`；应用用 `%AppData%\dsh-desktop\dsh-home`。用 CLI 管理**应用**的插件必须 `DSH_HOME="C:\Users\1\AppData\Roaming\dsh-desktop\dsh-home" dsh plugin --profile web add ...`，或用应用插件面板。用户已踩过（装进 `~/.dsh` 应用看不到）。
+- git 装一个根目录没有 package.json 的仓库（如「套装」型：submodule + install.ps1）→ pnpm 生成占位包 → `inspectInstalled` 检测 `_pnpmPlaceholder` 并明确报错。**「套装」型仓库要按仓库自己的机制装**（如 dsh-routing-suite：clone --recurse-submodules + release tgz 装配 injector + 复制 preset 到 `$DSH_HOME/.agent-presets/<id>`），不能走 pnpm。
 - 装插件成功 → 自动 `restartForPluginChange`（重启 dsh + reload 主窗口）。
 
 ### 4.3 NSIS 定制（`resources/installer.nsh` + electron-builder）
@@ -130,12 +135,16 @@ npm run pack:win     # 完整打包：icon → 下载 node/pnpm → 打包 dsh b
 
 ## 6. 本机当前运行状态（交接时刻）
 
-- **应用**：装在 `D:\Program Files (x86)\1\DeepSeek Harness`，当前是 **20:02 测试版**（缺 F5/自动刷新），**待更新到已发布的 v0.1.3**（20:20 构建，含全部修复）。数据在 `C:\Users\1\AppData\Roaming\dsh-desktop`（用户选择保持现状不迁移）。
-- **已装插件**（`$DSH_HOME/profiles/web`）：
-  - `@linxin666/dsh-web-ui-all@0.1.12`（web UI 全家桶，已生效）
-  - `@dsh-external/dsh-super-injector@0.3.3`（注入器，已装配进 bundles，**服务重启后生效**）
+- **应用**：装在 `D:\Program Files (x86)\1\DeepSeek Harness`，当前是 **20:02 测试版**（缺 F5/自动刷新）。**用户选择暂不更新**；已发布 v0.1.3（20:20）含刷新修复，另有 `f251ee2`（git 构建自动放行）未发版（可打 v0.1.4）。数据在 `C:\Users\1\AppData\Roaming\dsh-desktop`（保持现状不迁移）。
+- **dsh 服务状态**：当前 **stopped**（无 node 进程、3080 无监听）。Electron 壳在跑（DeepSeek Harness.exe ×5 属正常）。
+- **已装插件**（`$DSH_HOME/profiles/web`，全部已注册 bundle、`dump-config` 已合成，**均待服务重启生效**）：
+  - `@linxin666/dsh-web-ui-all@0.1.12`（web UI 全家桶）
+  - `@dsh-external/dsh-super-injector@0.3.3`（注入器，link 自 `d:\ai\测试\dsh-routing-suite\release-injector\package`）
+  - `dsh-better-sidebar@0.12.1`（VSCode 风格侧边栏工作台；node-pty 原生模块已构建）
+  - `@sanqi-normal/dsh-webui-market-plugin`（git 装，market 插件）
 - **预设**：`router-standard` 已复制到 `$DSH_HOME/.agent-presets/router-standard/`。
-- **待办**：重启 dsh 服务（注入器加载）→ `dev_plugin_status` 验证；新建会话选 Router Standard 预设。
+- **`~/.dsh` 独立世界**：用户在 PowerShell 直接 `dsh plugin add` 建过（含 market-plugin 一份），与应用世界无关，**用户保留不清理**。
+- **待办**：重启 dsh 服务（`dev_plugin_status` 验证注入器；侧边栏应出现 better-sidebar 工作台；新会话可选 Router Standard 预设）。
 - **装注入器的来源**：`d:\ai\测试\dsh-routing-suite\release-injector\package`（从 yjh051108/dsh-super-injector v0.3.3 release tgz 解压，免构建）。套装仓库 `d:\ai\测试\dsh-routing-suite\`（含 submodule）。
 
 ---
