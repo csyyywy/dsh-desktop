@@ -393,7 +393,7 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
   // 时 node-gyp 编译必需（冒烟实测缺失会 node-gyp 失败）。自动换阿里 apt 源（失败容忍）+ 安装。
   emit('npm-install', 55, '检查编译工具链（build-essential/python3）…')
   const toolsCheck = await runWslBash('command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && echo TOOLS_OK || echo TOOLS_MISSING', { silent: true, distro })
-  if (!toolsCheck.out.includes('TOOLS_OK')) {
+  if (!toolsCheck.stdout.includes('TOOLS_OK')) {
     emit('npm-install', 56, '缺少编译工具链，自动安装（阿里镜像源，约 2-3 分钟）…')
     pushLog('WSL 发行版缺少编译工具链，自动安装 build-essential/python3 …')
     // 自动换阿里源（仅替换 Ubuntu 默认域名，失败容忍），再安装
@@ -406,7 +406,7 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
       return { ok: false, message: '编译工具链安装失败，请手动执行: sudo apt install -y build-essential python3 后重试' }
     }
     const re = await runWslBash('command -v g++ >/dev/null && command -v make >/dev/null && command -v python3 >/dev/null && echo TOOLS_OK || echo TOOLS_MISSING', { silent: true, distro })
-    if (!re.out.includes('TOOLS_OK')) {
+    if (!re.stdout.includes('TOOLS_OK')) {
       return { ok: false, message: '编译工具链安装后仍不可用（g++/make/python3）' }
     }
   }
