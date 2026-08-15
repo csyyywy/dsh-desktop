@@ -67,7 +67,7 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 
 **v0.1.5（测试中）**：插件备份删除（`plugins:deleteBackup`，备份名白名单 `\d{8}-\d{6}` 防路径穿越 + 面板每行删除按钮）+ 自更新版本比较改语义化（仅 latest > current 才提示，防测试版被误判降级）。测试包经 `-c <完整配置副本>.yml` + `directories.output` 输出到独立目录（注意：electron-builder 26 的 `-c` 是**替换**配置而非合并，缺失 files/extraResources 会把整个项目打进 asar——8.2GB asar 事故）。
 
-**v0.2.0（开发完成，测试中）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。本机已装 Ubuntu2404（用户 dsh，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。
+**v0.2.0（开发完成，测试中）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。本机已装 Ubuntu2404（用户 dsh，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。**用户实测反馈已修**：①WSL 独立端口 `wslPort`（默认 3081，与 Windows 3080 隔离）；②启动互斥 + 健康探测验证 dsh 响应；③文件桥 Windows 根 = 盘符列表（多盘）+ localStorage 位置记忆；④「从本机同步插件与数据」→ WSL（配置层排除 node_modules + WSL 内 pnpm install 重建，部署后自动执行）。
 
 ---
 
