@@ -22,6 +22,8 @@ let splashWindow: BrowserWindow | null = null
 let tray: ReturnType<typeof createTray> | null = null
 let phase: ServerPhase = 'stopped'
 let error: string | null = null
+// dsh 服务重启后，已存在的主窗口内容会过期；下次从托盘打开时需刷新
+let webUIStale = true
 let latestVersionCache: string | null = null
 let quitting = false
 
@@ -95,7 +97,18 @@ function createMain(): BrowserWindow {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  // 主窗口就是 dsh Web UI，给 F5 / Ctrl+R 绑定刷新（Electron 默认不绑）
+  win.webContents.on('before-input-event', (event, input) => {
+    const isReloadKey = input.key === 'F5' || ((input.control || input.meta) && input.key.toLowerCase() === 'r')
+    if (input.type === 'keyDown' && isReloadKey) {
+      event.preventDefault()
+      win.webContents.reload()
+    }
+  })
   void win.loadURL(`http://127.0.0.1:${s.port || 3080}`)
+  win.webContents.on('did-finish-load', () => {
+    webUIStale = false
+  })
   win.on('close', (e) => {
     if (!quitting) {
       e.preventDefault()
@@ -116,6 +129,11 @@ function openMain(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createMain()
   } else {
+    // 服务重启过则刷新旧窗口，避免从托盘打开时仍是过期页面
+    if (webUIStale) {
+      webUIStale = false
+      mainWindow.webContents.reload()
+    }
     mainWindow.show()
     mainWindow.focus()
   }
@@ -231,6 +249,7 @@ async function restartForPluginChange(): Promise<void> {
     error = null
     // 插件变更后 dsh 已重启（web UI 的 __DSH_BOOT__ 已包含新客户端），
     // 刷新主窗口让新面板立即生效，否则窗口停留在旧页面看不到效果
+    webUIStale = true
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
   } catch (e) {
     phase = 'error'
@@ -276,6 +295,8 @@ const controller: Controller = {
       await restartServer(onServerExit)
       phase = 'running'
       error = null
+      webUIStale = true
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
     } catch (e) {
       phase = 'error'
       error = (e as Error).message
