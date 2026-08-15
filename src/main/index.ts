@@ -444,12 +444,12 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
   if (!setsid) {
     return { ok: false, message: '发行版缺少 setsid（util-linux），请先运行: sudo apt install util-linux（部署已完成，修复后即可启动）' }
   }
-  emit('verify', 98, '从本机同步插件/预设/会话…')
-  const sync = await syncFromWindows((m) => emit('verify', 98, '同步: ' + m))
-  if (!sync.ok) pushLog('部署后自动同步失败（可稍后在「运行后端」面板手动同步）: ' + sync.message)
-  emit('verify', 100, sync.ok ? '部署完成（已同步本机插件/预设/会话）' : '部署完成（同步失败，请手动同步）')
+  emit('verify', 98, '从本机同步插件/预设/会话（尽力而为，失败不阻断）…')
+  const sync = await syncFromWindows((m) => emit('verify', 98, '同步: ' + m), false)
+  if (!sync.ok) pushLog('部署后自动同步失败: ' + sync.message)
+  emit('verify', 100, sync.ok ? '部署完成' : '部署完成（同步失败，服务仍可启动）')
   broadcastStatus()
-  return { ok: true, message: `WSL 后端部署完成（${distro}），dsh@${target}${sync.ok ? '，已同步本机数据' : '（同步失败: ' + sync.message + '）'}` }
+  return { ok: true, message: `WSL 后端部署完成（${distro}），dsh@${target}${sync.ok ? '。' + sync.message : '（同步失败: ' + sync.message + '）'}` }
 }
 
 /**
@@ -462,7 +462,7 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
  *    portproxy 0.0.0.0:443 → 127.0.0.1:443 + 防火墙放行（一次性，持久化）；
  * 3. WSL /etc/hosts 写入 Windows 宿主 IP（ip route 网关）的 github 映射。
  */
-async function ensureWslGithubAccess(distro: string): Promise<{ ok: boolean; message: string }> {
+async function ensureWslGithubAccess(distro: string, allowUac = false): Promise<{ ok: boolean; message: string }> {
   const probe = await runWslBash('curl -sS -o /dev/null -w "%{http_code}" --max-time 8 https://github.com', { silent: true, distro })
   if (['200', '301', '302'].includes(probe.stdout.trim())) return { ok: true, message: '' }
   // Windows 宿主 IP（WSL 网关；tr+cut 提取，避免 awk 单引号被外层剥掉的问题）
@@ -482,6 +482,10 @@ async function ensureWslGithubAccess(distro: string): Promise<{ ok: boolean; mes
     })
     if (!hasLocal443) {
       return { ok: false, message: 'WSL 内无法访问 GitHub，且本机 127.0.0.1:443 无本地转发服务（steamcommunity_302 未运行？），git 依赖将安装失败' }
+    }
+    // 自动同步不弹 UAC（用户要求：做不到先跳过，服务先启动）；手动同步才提权配置
+    if (!allowUac) {
+      return { ok: false, message: 'WSL 内 GitHub 不可达（本机 hosts 劫持），自动同步跳过插件依赖重建；可在「从本机同步」时授权 UAC 打通' }
     }
     // 配置 portproxy + 防火墙（UAC 一次，幂等：先 delete 忽略错误再 add）
     const netshScript =
@@ -520,7 +524,7 @@ async function ensureWslGithubAccess(distro: string): Promise<{ ok: boolean; mes
  * 2. WSL 内 pnpm install 重建插件依赖（平台正确的二进制）
  * 调用方保证：同步在服务停止状态下进行（与备份同原子性规则）。
  */
-async function syncFromWindows(emit?: (msg: string) => void): Promise<PluginOpResult> {
+async function syncFromWindows(emit?: (msg: string) => void, allowUac = false): Promise<PluginOpResult> {
   const s = loadSettings()
   const d = currentDistro()
   const winHome = dshHome()
@@ -534,6 +538,7 @@ async function syncFromWindows(emit?: (msg: string) => void): Promise<PluginOpRe
   }
   // 配置层排除规则：node_modules 由 WSL 内 pnpm install 重建（平台不同），快照文件冗余
   const isSyncable = (rel: string): boolean => !/node_modules/.test(rel) && !/\.mkts-snapshot/.test(rel)
+  let copied = 0
   try {
     for (const entry of readdirSync(winHome, { withFileTypes: true })) {
       const rel = entry.name
@@ -548,21 +553,25 @@ async function syncFromWindows(emit?: (msg: string) => void): Promise<PluginOpRe
         mkdirSync(dirname(dst), { recursive: true })
         copyFileSync(src, dst)
       }
+      copied++
     }
-    // 确保 WSL 内可访问 GitHub（git 依赖 clone 需要；本机 hosts 劫持场景自动打通）
-    log('确保 WSL 内可访问 GitHub（git 依赖）…')
-    const gh = await ensureWslGithubAccess(d)
-    if (!gh.ok) pushLog('同步: GitHub 不可达警告 - ' + gh.message)
-    log('WSL 内 pnpm install 重建插件依赖（平台正确）…')
-    const r = await runPnpm(['install'])
-    if (r.code !== 0) {
-      const last = r.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
-      return { ok: false, message: `插件依赖重建失败: ${last || 'exit ' + r.code}` }
-    }
-    return { ok: true, message: '已从本机同步插件/预设/会话到 WSL' }
   } catch (e) {
+    // 配置层复制失败才视为同步失败（不影响已复制部分）
     return { ok: false, message: '同步失败: ' + (e as Error).message }
   }
+  // 插件依赖重建（尽力而为：失败不阻断，服务可直接启动，稍后可手动重试）
+  log('WSL 内 pnpm install 重建插件依赖（平台正确）…')
+  const gh = await ensureWslGithubAccess(d, allowUac)
+  if (!gh.ok) {
+    pushLog('同步: GitHub 不可达 - ' + gh.message)
+    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建跳过（${gh.message}）。服务可直接启动，稍后可在「从本机同步」时授权打通 GitHub 后重试` }
+  }
+  const r = await runPnpm(['install'])
+  if (r.code !== 0) {
+    const last = r.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
+    return { ok: true, message: `配置/预设/会话已同步（${copied} 项）；插件依赖重建失败（${last || 'exit ' + r.code}）。服务可直接启动，稍后可手动重试同步` }
+  }
+  return { ok: true, message: `已从本机同步插件/预设/会话到 WSL（${copied} 项，依赖已重建）` }
 }
 
 async function backendDiagnose(): Promise<string[]> {
@@ -775,10 +784,10 @@ const controller: Controller = {
   },
   backendSetup: (distro: string) => runBackendSetup(distro),
   backendSyncFromWindows: async () => {
-    // 与备份同原子性规则：停服 → 同步 → 恢复原运行状态
+    // 与备份同原子性规则：停服 → 同步 → 恢复原运行状态；手动同步允许弹 UAC 打通 GitHub
     const wasRunning = wslIsRunning()
     if (wasRunning) await stopServer()
-    const r = await syncFromWindows()
+    const r = await syncFromWindows(undefined, true)
     if (wasRunning) await restartServer(onServerExit)
     return r
   },
