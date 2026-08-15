@@ -114,7 +114,7 @@ function createMain(): BrowserWindow {
     const isReloadKey = input.key === 'F5' || ((input.control || input.meta) && input.key.toLowerCase() === 'r')
     if (input.type === 'keyDown' && isReloadKey) {
       event.preventDefault()
-      win.webContents.reload()
+      reloadMain()
     }
   })
   void win.loadURL(`http://127.0.0.1:${webPort()}`)
@@ -133,6 +133,18 @@ function createMain(): BrowserWindow {
   return win
 }
 
+/**
+ * 主窗口重新导航到当前后端端口（不是原地 reload！）。
+ * 关键坑（用户实测）：窗口 URL 是创建时写死的——本机模式为 3080，
+ * 切到 WSL（3081）后原地 reload 仍请求旧端口 → 连接失败 → 窗口空白；
+ * 必须重新 loadURL(当前 webPort())。
+ */
+function reloadMain(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  webUIStale = false
+  void mainWindow.loadURL(`http://127.0.0.1:${webPort()}`)
+}
+
 function openMain(): void {
   // WSL 模式没有本机 proc 句柄，isRunning() 恒 false——必须同时看 wslIsRunning()，
   // 否则启动成功后这里会误判"未运行"而递归 startDsh（被互斥锁挡住）→ 主窗口不弹出
@@ -145,8 +157,7 @@ function openMain(): void {
   } else {
     // 服务重启过则刷新旧窗口，避免从托盘打开时仍是过期页面
     if (webUIStale) {
-      webUIStale = false
-      mainWindow.webContents.reload()
+      reloadMain()
     }
     mainWindow.show()
     mainWindow.focus()
@@ -315,9 +326,9 @@ async function restartForPluginChange(): Promise<void> {
     phase = 'running'
     error = null
     // 插件变更后 dsh 已重启（web UI 的 __DSH_BOOT__ 已包含新客户端），
-    // 刷新主窗口让新面板立即生效，否则窗口停留在旧页面看不到效果
+    // 重新导航主窗口到当前端口让新面板立即生效（原地 reload 会停留在旧端口 URL）
     webUIStale = true
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
+    reloadMain()
   } catch (e) {
     phase = 'error'
     error = (e as Error).message
@@ -657,7 +668,7 @@ const controller: Controller = {
       phase = 'running'
       error = null
       webUIStale = true
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
+      reloadMain()
     } catch (e) {
       phase = 'error'
       error = (e as Error).message
