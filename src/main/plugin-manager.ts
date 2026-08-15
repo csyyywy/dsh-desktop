@@ -9,12 +9,12 @@
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { resolveRuntime } from './dsh-manager'
 import { dataDir, dshHome, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
-import { currentDistro, runWsl, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin } from './wsl'
+import { currentDistro, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin, bashQuote } from './wsl'
 import type { PluginInfo, PluginOpResult } from '../shared/types'
 
 const PROFILE = 'web'
@@ -54,7 +54,10 @@ async function runPnpm(args: string[]): Promise<{ code: number; output: string }
     const linuxDir = profileLinuxDir()
     if (!node || !pnpm || !linuxDir) return { code: 1, output: 'WSL 后端未部署（缺少 node/pnpm）' }
     pushLog(`$ wsl pnpm ${fullArgs.join(' ')}`)
-    const res = await runWsl([node, pnpm, '--dir', linuxDir, ...fullArgs], { timeoutMs: 10 * 60 * 1000 })
+    // export PATH：lifecycle 脚本（node-pty 等原生构建）需要 node in PATH；
+    // 用户参数逐个 bashQuote（双引号形式，wsl.exe 外层包装安全）
+    const script = `export PATH=${bashQuote(dirname(node))}:$PATH; ${bashQuote(node)} ${bashQuote(pnpm)} --dir ${bashQuote(linuxDir)} ${fullArgs.map(bashQuote).join(' ')}`
+    const res = await runWslBash(script, { timeoutMs: 10 * 60 * 1000 })
     return { code: res.code, output: res.stdout + res.stderr }
   }
   return new Promise((resolve) => {

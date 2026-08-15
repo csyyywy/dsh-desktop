@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { dataDir, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
-import { currentDistro, runWsl, toUnc, wslBaseLinux, wslDshBinLinux, wslNpmCli, wslNodeBin } from './wsl'
+import { currentDistro, runWsl, runWslBash, toUnc, wslBaseLinux, wslDshBinLinux, wslNpmCli, wslNodeBin, bashQuote } from './wsl'
 
 export interface Runtime {
   node: string
@@ -239,5 +239,8 @@ export function installDshWsl(
   if (registry) args.push('--registry', registry)
   args.push(target)
   pushLog(`$ wsl npm install ${target}`)
-  return runWsl(args, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then((r) => r.code)
+  // export PATH：npm 的 postinstall 脚本（koffi/node-pty 等）用 `sh -c node`，
+  // 发行版 PATH 必须包含我们的 Linux Node（冒烟实测：缺了会 node: not found）
+  const script = `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${args.map(bashQuote).join(' ')}`
+  return runWslBash(script, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then((r) => r.code)
 }
