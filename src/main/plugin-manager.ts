@@ -125,6 +125,22 @@ export function listBackups(): string[] {
   return readdirSync(dir).sort().reverse()
 }
 
+// 备份名是 backupProfile 生成的时间戳（YYYYMMDD-HHMMSS）；
+// 删除前必须严格校验，防止构造 ../ 之类路径穿越
+const BACKUP_NAME_RE = /^\d{8}-\d{6}$/
+
+export function deleteBackup(name: string): PluginOpResult {
+  if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
+  const target = join(backupsDir(), name)
+  if (!existsSync(target)) return { ok: false, message: '备份不存在' }
+  try {
+    rmSync(target, { recursive: true, force: true })
+  } catch (e) {
+    return { ok: false, message: '删除失败: ' + (e as Error).message }
+  }
+  return { ok: true, message: `已删除备份 ${name}` }
+}
+
 export function restoreBackup(name: string): PluginOpResult {
   const src = join(backupsDir(), name)
   const dir = profileDir()

@@ -27,6 +27,7 @@ export interface Controller {
   openExternal(url: string): void
   listBackups(): Promise<string[]>
   restoreBackup(name: string): Promise<PluginOpResult>
+  deleteBackup(name: string): PluginOpResult
   quit(): void
   isRunning(): boolean
 }

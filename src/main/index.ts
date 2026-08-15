@@ -10,7 +10,7 @@ import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
-import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin } from './plugin-manager'
+import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
@@ -398,6 +398,7 @@ const controller: Controller = {
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   },
+  deleteBackup: (name) => deleteBackupFile(name),
   quit: () => {
     quitting = true
     app.quit()

@@ -118,6 +118,7 @@ export interface DshApi {
   openExternal(url: string): Promise<void>
   listBackups(): Promise<string[]>
   restoreBackup(name: string): Promise<PluginOpResult>
+  deleteBackup(name: string): Promise<PluginOpResult>
   quit(): Promise<void>
   onStatusChanged(cb: (s: AppStatus) => void): () => void
   onLogLine(cb: (line: string) => void): () => void

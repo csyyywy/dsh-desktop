@@ -662,6 +662,15 @@ function PluginsPanel() {
     await refreshBackups()
     await search(query)
   }
+  const doDeleteBackup = async (name: string): Promise<void> => {
+    if (!window.confirm(`确定删除备份 ${name}？删除后不可恢复。`)) return
+    setBusy(name)
+    setMsg('')
+    const r = await window.dsh.deleteBackup(name)
+    setMsg(r.message)
+    setBusy(null)
+    await refreshBackups()
+  }
   const doCustomInstall = async (): Promise<void> => {
     const spec = customSpec.trim()
     if (!spec) return
@@ -792,13 +801,22 @@ function PluginsPanel() {
             {backups.map((b) => (
               <div key={b} className="flex items-center justify-between rounded-xl border border-white/10 bg-ink-950/70 px-4 py-2">
                 <span className="font-mono text-xs text-slate-300">{b}</span>
-                <button
-                  disabled={busy === b}
-                  onClick={() => void doRestore(b)}
-                  className="shrink-0 rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-brand-500/20 hover:text-brand-300 disabled:opacity-50"
-                >
-                  {busy === b ? '回退中…' : '回退'}
-                </button>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    disabled={busy === b}
+                    onClick={() => void doRestore(b)}
+                    className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-brand-500/20 hover:text-brand-300 disabled:opacity-50"
+                  >
+                    {busy === b ? '回退中…' : '回退'}
+                  </button>
+                  <button
+                    disabled={busy === b}
+                    onClick={() => void doDeleteBackup(b)}
+                    className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
             ))}
           </div>

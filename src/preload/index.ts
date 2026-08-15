@@ -27,6 +27,7 @@ const api: DshApi = {
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
   listBackups: () => ipcRenderer.invoke('plugins:backups'),
   restoreBackup: (name: string) => ipcRenderer.invoke('plugins:restoreBackup', name),
+  deleteBackup: (name: string) => ipcRenderer.invoke('plugins:deleteBackup', name),
   quit: () => ipcRenderer.invoke('app:quit'),
   onStatusChanged: (cb) => {
     const h = (_e: IpcRendererEvent, s: AppStatus): void => cb(s)

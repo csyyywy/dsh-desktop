@@ -27,5 +27,6 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('app:openExternal', (_e, url: string) => controller.openExternal(url))
   ipcMain.handle('plugins:backups', () => controller.listBackups())
   ipcMain.handle('plugins:restoreBackup', (_e, name: string) => controller.restoreBackup(name))
+  ipcMain.handle('plugins:deleteBackup', (_e, name: string) => controller.deleteBackup(name))
   ipcMain.handle('app:quit', () => controller.quit())
 }
