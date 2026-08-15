@@ -14,7 +14,7 @@ import { resolveRuntime } from './dsh-manager'
 import { dataDir, dshHome, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
-import { currentDistro, runWsl, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin } from './wsl'
+import { currentDistro, runWsl, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin } from './wsl'
 import type { PluginInfo, PluginOpResult } from '../shared/types'
 
 const PROFILE = 'web'
@@ -164,7 +164,7 @@ async function backupProfile(): Promise<void> {
     const linuxDest = backupsLinuxDir()
     if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
       // 回退：发行版内直接 cp
-      const res = await runWsl(['bash', '-lc', `mkdir -p ${linuxDest} && cp -r ${linuxDir} ${linuxDest}/${name}`], { silent: true })
+      const res = await runWslBash(`mkdir -p ${linuxDest} && cp -r ${linuxDir} ${linuxDest}/${name}`, { silent: true })
       if (res.code !== 0) pushLog('备份 profile（wsl cp）失败: ' + (res.stderr || res.stdout).trim())
     } else {
       pushLog('备份 profile 失败: ' + (e as Error).message)
@@ -208,7 +208,7 @@ export async function restoreBackup(name: string): Promise<PluginOpResult> {
     const linuxDir = profileLinuxDir()
     const linuxSrc = backupsLinuxDir()
     if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
-      const res = await runWsl(['bash', '-lc', `rm -rf ${linuxDir} && mkdir -p ${linuxDir} && cp -r ${linuxSrc}/${name} ${linuxDir}`], { silent: true })
+      const res = await runWslBash(`rm -rf ${linuxDir} && mkdir -p ${linuxDir} && cp -r ${linuxSrc}/${name} ${linuxDir}`, { silent: true })
       return res.code === 0
         ? { ok: true, message: `已回退到 ${name}` }
         : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }

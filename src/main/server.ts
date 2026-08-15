@@ -113,11 +113,19 @@ async function startWslServer(): Promise<void> {
   // 工作区：settings.workspace 为空或非法时回退发行版 HOME
   const ws = settings.workspace && validateLinuxPath(settings.workspace) ? settings.workspace : settings.wslHome
   pushLog(`启动 WSL dsh: ${node} ${bin} --profile web --port ${settings.port}（${distro}）`)
+  // 关键坑（PoC 实测）：wsl 的 bash 是进程组长 → setsid 必然 fork → `$!` 是已退出的
+  // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其
+  // pgid，pidfile 存 `<pid> <pgid>` 两列，停止时优先按进程组杀。
+  const pattern = `@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`
   const script = [
     `mkdir -p ${bashQuote(home)}`,
     `cd ${bashQuote(ws)}`,
-    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${settings.port} >> ${bashQuote(logfile)} 2>&1 &`,
-    `echo $! > ${bashQuote(pidfile)}`
+    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${settings.port} >> ${bashQuote(logfile)} 2>&1 < /dev/null &`,
+    `sleep 1.5`,
+    // grep -vw $$：pgrep -f 会匹配运行本脚本的 bash 自身（命令行含 pattern 文本），必须排除
+    `PID=$(pgrep -u $(id -un) -f ${bashQuote(pattern)} | grep -vw $$ | head -1)`,
+    `PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')`,
+    `echo "$PID $PGID" > ${bashQuote(pidfile)}`
   ].join(' && ')
   const res = await runWslBash(script, { timeoutMs: 30000 })
   if (res.code !== 0) {
@@ -138,22 +146,25 @@ async function startWslServer(): Promise<void> {
 async function stopWslServer(): Promise<void> {
   const pidfile = wslPidfileLinux()
   if (!pidfile) return
-  const pid = await readPidfile(pidfile)
-  if (pid != null) {
-    // setsid 启动后 pid == 进程组 id：先杀整组，再杀单进程兜底
-    await runWslBash(`kill -- -${pid} 2>/dev/null; kill ${pid} 2>/dev/null`, { silent: true })
+  const info = await readPidfile(pidfile)
+  if (info.pid != null) {
+    // 优先按进程组杀（setsid 新会话组），再杀单进程兜底
+    const cmds: string[] = []
+    if (info.pgid != null) cmds.push(`kill -- -${info.pgid} 2>/dev/null`)
+    cmds.push(`kill ${info.pid} 2>/dev/null`)
+    await runWslBash(cmds.join('; '), { silent: true })
     for (let i = 0; i < 10; i++) {
-      if (!(await pidAlive(pid))) break
+      if (!(await pidAlive(info.pid))) break
       await sleep(500)
     }
-    if (await pidAlive(pid)) {
+    if (await pidAlive(info.pid)) {
       // 残留：按命令行精确匹配（限当前用户），不 terminate 发行版
       const settings = loadSettings()
       const pattern = bashQuote(`@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`)
       await runWslBash(`pkill -u $(id -un) -f ${pattern} 2>/dev/null`, { silent: true })
       await sleep(800)
     }
-    wslStalePid = (await pidAlive(pid)) ? pid : null
+    wslStalePid = (await pidAlive(info.pid)) ? info.pid : null
   } else {
     wslStalePid = null
   }
@@ -167,8 +178,8 @@ export async function forceCleanupWsl(): Promise<boolean> {
   const res = await runWslBash(`pkill -u $(id -un) -f ${pattern} 2>/dev/null`, { silent: true })
   await sleep(500)
   const pidfile = wslPidfileLinux()
-  const pid = pidfile ? await readPidfile(pidfile) : null
-  wslStalePid = pid != null && (await pidAlive(pid)) ? pid : null
+  const info = pidfile ? await readPidfile(pidfile) : { pid: null, pgid: null }
+  wslStalePid = info.pid != null && (await pidAlive(info.pid)) ? info.pid : null
   return res.code === 0
 }
 

@@ -16,7 +16,7 @@ import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
 import {
-  bashQuote, currentDistro, hasSetsid, listDistros, pingDistro, runWsl, runWslGlobal, toUnc,
+  bashQuote, currentDistro, hasSetsid, listDistros, pingDistro, runWsl, runWslBash, runWslGlobal, toUnc,
   validateIpcArg, VALID_DISTRO_RE, wslDshHomeLinux, wslDshHomeWindows,
   wslHomeOf, wslVersion, kernelVersion, wslNodeBin
 } from './wsl'
@@ -362,7 +362,7 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {
   const home = await wslHomeOf(distro)
   if (!home) return { ok: false, message: '无法解析发行版 HOME' }
   const base = `${home}/.dsh-desktop`
-  const mk = await runWsl(['bash', '-lc', `mkdir -p ${bashQuote(`${base}/node`)} ${bashQuote(`${base}/pnpm`)} ${bashQuote(`${base}/logs`)}`], { silent: true, distro })
+  const mk = await runWslBash(`mkdir -p ${bashQuote(`${base}/node`)} ${bashQuote(`${base}/pnpm`)} ${bashQuote(`${base}/logs`)}`, { silent: true, distro })
   if (mk.code !== 0) return { ok: false, message: '创建目录失败: ' + (mk.stderr || mk.stdout).trim() }
 
   emit('node', 15, '拷贝 Linux Node（约 25MB）…')
@@ -376,7 +376,7 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {
     return { ok: false, message: '拷贝 Node 失败: ' + (e as Error).message }
   }
   emit('node', 30, '解压 Node（tar 保留执行权限）…')
-  const x = await runWsl(['bash', '-lc', `cd ${bashQuote(base)} && tar -xJf node.tar.xz --strip-components=1 -C node && chmod +x node/bin/node && rm -f node.tar.xz`], { timeoutMs: 180000, distro })
+  const x = await runWslBash(`cd ${bashQuote(base)} && tar -xJf node.tar.xz --strip-components=1 -C node && chmod +x node/bin/node && rm -f node.tar.xz`, { timeoutMs: 180000, distro })
   if (x.code !== 0) return { ok: false, message: '解压 Node 失败: ' + (x.stderr || x.stdout).trim() }
 
   emit('pnpm', 45, '拷贝 pnpm（约 36MB）…')

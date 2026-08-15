@@ -97,12 +97,18 @@ export function runWsl(
   return spawnWsl(['-d', distro, '--', ...args], opts)
 }
 
-/** 在发行版内跑一段 bash 脚本（组件必须全部经 bashQuote 拼接） */
+/**
+ * 在发行版内跑一段 bash 脚本（组件必须全部经 bashQuote 拼接）。
+ * 关键坑（PoC 实测）：wsl.exe 会把命令经外层 shell 包装，**所有 `$` 会被预先展开一次**
+ * （`$!` 会被外层吃成空、`$(id -un)` 依赖外层环境）。因此这里统一把脚本中的
+ * `$` 转义为 `\$`，由内层 bash 展开——保证 `$!`/`$(...)` 语义正确。
+ * 若脚本需要字面 `$`（不应出现），请改用 runWsl 的 argv 形式。
+ */
 export function runWslBash(
   script: string,
   opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; distro?: string } = {}
 ): Promise<WslResult> {
-  return runWsl(['bash', '-lc', script], opts)
+  return runWsl(['bash', '-lc', script.replace(/\$/g, '\\$')], opts)
 }
 
 // ---------- 发行版枚举 / 环境信息 ----------
@@ -193,11 +199,25 @@ export async function wslpath(path: string, toWindows = true): Promise<string | 
 
 // ---------- 状态原语（实时性优先，全部走 wsl.exe） ----------
 
-/** 读 pidfile（发行版内 cat） */
-export async function readPidfile(linuxPath: string, distro?: string): Promise<number | null> {
+export interface PidInfo {
+  pid: number | null
+  pgid: number | null
+}
+
+/**
+ * 读 pidfile（发行版内 cat）。格式：`<pid> <pgid>` 两列（见 server.ts 启动脚本）。
+ * 注意：wsl 的 bash 是进程组长，setsid 必然 fork，`$!` 拿到的是已退出的父进程
+ * pid（PoC 实测），因此 pgid 必须由 ps 读取后与 pid 一并写入。
+ */
+export async function readPidfile(linuxPath: string, distro?: string): Promise<PidInfo> {
   const res = await runWsl(['cat', linuxPath], { silent: true, distro })
-  const pid = Number(res.stdout.trim())
-  return res.code === 0 && Number.isInteger(pid) && pid > 1 ? pid : null
+  const parts = res.stdout.trim().split(/\s+/)
+  const pid = Number(parts[0])
+  const pgid = Number(parts[1])
+  return {
+    pid: res.code === 0 && Number.isInteger(pid) && pid > 1 ? pid : null,
+    pgid: Number.isInteger(pgid) && pgid > 1 ? pgid : null
+  }
 }
 
 /** 进程存活检测（kill -0，外部 /bin/kill） */
@@ -361,7 +381,20 @@ export function validateIpcArg(v: unknown, maxLen = 4096): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= maxLen && !v.includes('\0')
 }
 
-/** bash 单引号安全引用：' → '\'' */
+/**
+ * bash 参数安全引用（双引号形式）。
+ * 关键坑（PoC 实测）：wsl.exe 会把命令经外层 shell 包装，**单引号会被外层剥掉**，
+ * 含空格的参数（如 pgrep/pkill 的 pattern）会断词；因此改用双引号并转义
+ * `\` `"` `$` 反引号，配合 runWslBash 的 `$` 全局转义，由内层 bash 还原。
+ */
 export function bashQuote(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'"
+  return (
+    '"' +
+    s
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, '\\$')
+      .replace(/`/g, '\\`') +
+    '"'
+  )
 }
