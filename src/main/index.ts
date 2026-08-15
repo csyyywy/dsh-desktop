@@ -229,6 +229,9 @@ async function restartForPluginChange(): Promise<void> {
     await restartServer(onServerExit)
     phase = 'running'
     error = null
+    // 插件变更后 dsh 已重启（web UI 的 __DSH_BOOT__ 已包含新客户端），
+    // 刷新主窗口让新面板立即生效，否则窗口停留在旧页面看不到效果
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
   } catch (e) {
     phase = 'error'
     error = (e as Error).message
