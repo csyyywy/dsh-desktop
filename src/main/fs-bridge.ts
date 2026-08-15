@@ -17,10 +17,30 @@ import type { FsEntry, FsSide, FsTransferProgress, FsTransferRequest, FsTranslat
 type Emit = (p: FsTransferProgress) => void
 
 /** 侧路径 → Windows 可访问路径（win 原样；wsl 经 UNC），非法返回 null */
+/** 侧路径 → Windows 可访问路径（win 原样；wsl 经 UNC），非法返回 null；'' = 盘符列表虚拟根 */
 function winOf(side: FsSide, path: string): string | null {
-  if (side === 'win') return validateWinPath(path) ? path : null
+  if (side === 'win') {
+    if (path === '') return ''
+    return validateWinPath(path) ? path : null
+  }
   const d = currentDistro()
   return d && validateLinuxPath(path) ? toUnc(d, path) : null
+}
+
+/** 枚举 Windows 盘符（A:-Z:，文件桥根视图，支持 C/D/E 多盘切换） */
+function driveEntries(): FsEntry[] {
+  const out: FsEntry[] = []
+  for (let c = 65; c <= 90; c++) {
+    const letter = String.fromCharCode(c)
+    const root = `${letter}:\\`
+    try {
+      const st = statSync(root)
+      out.push({ name: `${letter}:`, path: root, isDir: true, size: 0, mtime: Math.floor(st.mtimeMs) })
+    } catch {
+      /* 不存在的盘符跳过 */
+    }
+  }
+  return out
 }
 
 function linuxJoin(base: string, name: string): string {
@@ -30,6 +50,7 @@ function linuxJoin(base: string, name: string): string {
 // ---------- 浏览 ----------
 
 export function listEntries(side: FsSide, path: string): FsEntry[] {
+  if (side === 'win' && path === '') return driveEntries()
   const win = winOf(side, path)
   if (!win) throw new Error('非法路径')
   const entries = readdirSync(win, { withFileTypes: true }).map((e) => {

@@ -23,12 +23,14 @@ function Button({
   variant = 'primary',
   disabled,
   onClick,
-  children
+  children,
+  title
 }: {
   variant?: 'primary' | 'ghost' | 'danger'
   disabled?: boolean
   onClick: () => void
   children: ReactNode
+  title?: string
 }) {
   const styles: Record<string, string> = {
     primary: 'bg-brand-500 text-white hover:bg-brand-400',
@@ -39,6 +41,7 @@ function Button({
     <button
       disabled={disabled}
       onClick={onClick}
+      title={title}
       className={`rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${styles[variant]}`}
     >
       {children}
@@ -231,8 +234,18 @@ export default function BackendPanel() {
               <Button disabled={busy || !distro} onClick={() => void doSetup()}>
                 一键部署到 {distro || '…'}
               </Button>
+              {wslActive && status?.wslReady && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || running}
+                  onClick={() => void run(() => window.dsh.backendSyncFromWindows())}
+                  title="把本机 dsh 的插件/预设/会话同步到 WSL（停服执行，完成后自动恢复）"
+                >
+                  从本机同步插件与数据
+                </Button>
+              )}
               {!wslActive && (
-                <span className="self-center text-xs text-slate-500">部署完成后自动切换为 WSL 模式</span>
+                <span className="self-center text-xs text-slate-500">部署完成后自动切换为 WSL 模式并同步本机数据</span>
               )}
             </div>
           </div>

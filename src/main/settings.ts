@@ -16,6 +16,7 @@ const DEFAULTS: AppSettings = {
   backend: 'local',
   wslDistro: '',
   wslHome: '',
+  wslPort: 3081,
   npmRegistry: 'https://registry.npmmirror.com'
 }
 

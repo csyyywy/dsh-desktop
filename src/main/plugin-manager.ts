@@ -41,7 +41,9 @@ function pnpmCjsPath(): string {
     : join(app.getAppPath(), 'resources', 'pnpm', 'bin', 'pnpm.cjs')
 }
 
-async function runPnpm(args: string[]): Promise<{ code: number; output: string }> {
+/** 运行 pnpm（本机 = node 跑 pnpm.cjs；WSL = 发行版内 node，--dir Linux profile）。
+ *  导出供「从本机同步」等流程复用（同步后重建插件依赖）。 */
+export async function runPnpm(args: string[]): Promise<{ code: number; output: string }> {
   const dir = profileDir()
   if (!existsSync(join(dir, 'package.json'))) {
     return { code: 1, output: '配置目录尚未初始化，请先启动一次服务' }

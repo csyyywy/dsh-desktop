@@ -67,6 +67,8 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 
 **v0.1.5（测试中）**：插件备份删除（`plugins:deleteBackup`，备份名白名单 `\d{8}-\d{6}` 防路径穿越 + 面板每行删除按钮）+ 自更新版本比较改语义化（仅 latest > current 才提示，防测试版被误判降级）。测试包经 `-c <完整配置副本>.yml` + `directories.output` 输出到独立目录（注意：electron-builder 26 的 `-c` 是**替换**配置而非合并，缺失 files/extraResources 会把整个项目打进 asar——8.2GB asar 事故）。
 
+**v0.2.0（开发完成，测试中）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。本机已装 Ubuntu2404（用户 dsh，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。
+
 ---
 
 ## 3. 本机环境（接手者必须知道）
@@ -123,8 +125,35 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - **硬约束**：查版本走 `curlJson`（GitHub API）；下载二进制用 `spawn('curl', ['-sS','-L','--fail','--retry','3','-o',part,url])`。Node fetch/https 在自定义 CA 代理下不可用，别换。
 - **版本判定**：`releases/latest` 的 `tag_name`（去 `v`）与 `app.getVersion()` 字符串比对；只认名字匹配 `-setup.exe` 的资产（NSIS 安装包，artifactName `${productName}-${version}-setup.${ext}`）。
 - **下载**：到 `<dataDir>/updates/dsh-desktop-<version>-setup.exe`（在数据目录，升级不丢）；校验 = 文件大小与资产 size 一致 + 不小于 1MB；进度由主进程轮询 `.part` 文件（300ms）推 `app:updateProgress`。
-- **安装**：`spawn(installer, ['/S','--force-run'], {detached:true, stdio:'ignore'})` + `unref()` → 1s 后 `quitting=true; app.quit()`（before-quit 停 dsh 服务）。NSIS 模板等旧进程退出后替换文件，`--force-run` 装完自动拉起新版本。
+- **安装**：`spawn(installer, ['/S','--force-run'], {detached:true, stdio:'ignore'})` + `unref()` → 1s 后 `quitting=true; app.quit()`（before-quit 停 dsh 服务）。NSIS 模板等旧进程退出后替换文件，`--force-run` 装完自动拉起新版本。**v0.2.0 起：WSL 后端运行时先 stopServer 再启动安装器**（避免新实例端口冲突）。
 - **发布联动**：`electron-builder --win` 因 publish 配置（`csyyywy/dsh-desktop`）会在 dist 生成 `latest.yml`（升级信息），gh release create 时一并上传（当前内置更新器不依赖它，留作 electron-updater 备用通道）。
+
+### 4.7 WSL 后端（v0.2.0，`wsl.ts` / `server.ts` / `dsh-manager.ts` / `plugin-manager.ts`）
+
+**架构**：dsh 运行在 WSL2 发行版内（数据在发行版 `~/.dsh-desktop`，与 Windows dataDir 语义镜像：`node/` Linux Node、`pnpm/` 纯 JS、`node_modules/` npm --prefix 安装、`dsh-home/`=$DSH_HOME、`backups/plugins/`、`dsh.pid`（存 `<pid> <pgid>`）、`logs/dsh.log`）。Windows 侧经 UNC `\\wsl.localhost\<distro>\...` 读写（仅非关键批量操作）。
+
+**必须知道的坑（全部 PoC 实测）**：
+- **dsh 只监听 127.0.0.1**（`dsh-host-webserver` Config 仅允许 127.0.0.1/0.0.0.0；`dsh-web-app` 显式拒绝 `--host 0.0.0.0` 防 RCE）。→ Windows 访问 WSL dsh 的**唯一通道是 WSL2 localhost 转发**（NAT=wslrelay；mirrored=回环共享）。`localhostForwarding=false`（.wslconfig）或 Windows 侧端口被占 → 启动前明确报错 + 指引。**没有 wslIp 兜底**（对回环监听无效）。
+- **wsl.exe 输出默认 UTF-16LE**（中文系统乱码）→ spawn 一律 env `WSL_UTF8=1`；输出按 buffer 收，含 `\0` 按 utf16le 解码（双保险）。
+- **受限令牌下 wsl.exe 报 E_ACCESSDENIED**（沙箱/提权环境）→ 应用正常令牌无碍；枚举调用必须容错并给指引。
+- **wsl.exe 外层 shell 会预展开 `$`**：`$!` 被吃空、`$(id -un)` 依赖外层环境。→ `runWslBash` 统一把脚本中 `$` 转义为 `\$`，由内层 bash 展开。
+- **外层 shell 会剥掉单引号**：含空格参数（pgrep/pkill pattern）断词。→ `bashQuote` 用**双引号形式**（转义 `\` `"` `$` 反引号）。
+- **wsl 的 bash 是进程组长 → `setsid` 必然 fork → `$!` 不是进程组 id**。→ 启动后 `pgrep -u $(id -un) -f <pattern> | grep -vw $$ | head -1` 找实际 pid，`ps -o pgid=` 读 pgid，pidfile 存 `<pid> <pgid>`；停止 `kill -- -<pgid>`（组）→ 单 pid → 轮询 kill -0 → 残留 pkill（限用户）→ UI 强制清理。**绝不 terminate 发行版**（杀用户其他 WSL 进程）。`&` 是分隔符，**其后不能接 `;`/`&&`**（合并 `& sleep 1.5` 一行）。
+- **npm/pnpm 安装必须 export PATH**（`~/.dsh-desktop/node/bin`）：postinstall 脚本（koffi/node-pty 等）用 `sh -c node`，PATH 缺失报 `node: not found`。
+- **node-pty 等原生包需要 build-essential + python3**：backendSetup 自动检测并 apt 安装（自动换阿里源，失败容忍）；缺失时 npm install 会 node-gyp 失败。
+- **Linux Node 部署**：构建期只存 `resources/node-linux.tar.xz`（不提前解压，~25MB），部署时 UNC 拷贝 → WSL 内 `tar -xJf --strip-components=1 -C node`（保留执行位）+ `chmod +x` 保险。
+- **镜像**：npm 默认走 `https://registry.npmmirror.com`（设置面板可改）；WSL 内安装实测 1 分钟装完 532 包。
+- **版本策略**：WSL 首次部署/无参更新 = `settings.dshVersion` 显式值 ?? 内置 bundle 版本（`resources/dsh-bundle`，构建期固化），**不自动 latest**；显式选版本才升级。
+- **备份原子性**：WSL 模式插件安装/卸载/回退 = 记录 wasRunning → stop → 快照（UNC cpSync，失败回退 `wsl cp -r`）→ 恢复原运行状态。
+- 状态原语（pidfile/kill -0/残留）**必须走 wsl.exe**（实时+权限正确），不用 UNC（9P 偶发 EPERM/延迟）。
+
+### 4.8 文件桥（v0.2.0，`fs-bridge.ts`）
+- 双端浏览（win 原生 / wsl 经 UNC），路径在 IPC 中始终 Linux 形态；UNC 只由 `toUnc` 构造（不信任渲染层拼接）。
+- **可中断流式复制**：64KB 块 + 背压；目标写 `<name>.dshpart`，成功 rename 落名（冲突默认拒绝/可覆盖）；取消/失败 destroy 流 + 删 .dshpart（**不残留半成品**）。`rs.destroy()` 无参不触发 error 事件——取消靠 data 轮询 flag（已实现）。
+- 并发上限 2，其余排队（进度事件含 queued）；同侧移动优先 `fs.rename`（EXDEV 回退复制+删源）。
+- `translate`：返回 `windows`（UNC，任意 WSL 路径有效）+ `windowsLocal`（wslpath -w 盘符映射，仅 /mnt/* 有效）+ `linux`；`\\wsl.localhost\`/盘符/`/` 开头四分支判定。
+- 实测性能：UNC→本地 120MB/s、本地→UNC 102MB/s（1GB 约 8-10s），无需 wsl cp 混合模式。
+- 拖拽：preload 经 `webUtils.getPathForFile` 取本地路径。
 
 ---
 

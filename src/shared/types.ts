@@ -27,6 +27,8 @@ export interface AppSettings {
   wslDistro: string
   /** 发行版内默认用户的 HOME（backendSetup 时解析写入） */
   wslHome: string
+  /** WSL 后端 dsh 监听端口（独立于本机 port，避免与 Windows 侧服务冲突） */
+  wslPort: number
   /** WSL 内 npm 镜像 registry（可选，空 = 官方源） */
   npmRegistry: string
 }
@@ -144,6 +146,8 @@ export interface DshApi {
   backendSetMode(mode: BackendMode): Promise<BackendInfo>
   backendSetDistro(distro: string): Promise<BackendInfo>
   backendSetup(distro: string): Promise<PluginOpResult>
+  /** 从本机 dsh-home 同步插件/预设/会话到 WSL（停服执行，完成后恢复原状态） */
+  backendSyncFromWindows(): Promise<PluginOpResult>
   backendInstallDistro(name: string): Promise<PluginOpResult>
   backendDiagnose(): Promise<string[]>
   backendForceCleanup(): Promise<PluginOpResult>

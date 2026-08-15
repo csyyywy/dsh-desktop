@@ -44,6 +44,7 @@ export interface Controller {
   fsbMkdir(side: FsSide, path: string): Promise<PluginOpResult>
   fsbTranslate(path: string): Promise<FsTranslateResult>
   fsbOpen(side: FsSide, path: string, terminal?: boolean): Promise<PluginOpResult>
+  backendSyncFromWindows(): Promise<PluginOpResult>
   quit(): void
   isRunning(): boolean
 }

@@ -33,6 +33,7 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('backend:setMode', (_e, mode: 'local' | 'wsl') => controller.backendSetMode(mode))
   ipcMain.handle('backend:setDistro', (_e, distro: string) => controller.backendSetDistro(distro))
   ipcMain.handle('backend:setup', (_e, distro: string) => controller.backendSetup(distro))
+  ipcMain.handle('backend:syncFromWindows', () => controller.backendSyncFromWindows())
   ipcMain.handle('backend:installDistro', (_e, name: string) => controller.backendInstallDistro(name))
   ipcMain.handle('backend:diagnose', () => controller.backendDiagnose())
   ipcMain.handle('backend:forceCleanup', () => controller.backendForceCleanup())

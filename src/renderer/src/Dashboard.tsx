@@ -301,6 +301,14 @@ function SettingsPanel() {
               className={inputCls}
             />
           </Field>
+          <Field label="WSL 端口（WSL 模式专用，独立于本机端口）">
+            <input
+              type="number"
+              value={local.wslPort}
+              onChange={(e) => set({ wslPort: Number(e.target.value) || 3081 })}
+              className={inputCls}
+            />
+          </Field>
           <Field label="工作区目录">
             <input
               value={local.workspace}

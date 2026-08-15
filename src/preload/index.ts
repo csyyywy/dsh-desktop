@@ -54,6 +54,7 @@ const api: DshApi = {
   backendSetMode: (mode: BackendMode) => ipcRenderer.invoke('backend:setMode', mode),
   backendSetDistro: (distro: string) => ipcRenderer.invoke('backend:setDistro', distro),
   backendSetup: (distro: string) => ipcRenderer.invoke('backend:setup', distro),
+  backendSyncFromWindows: () => ipcRenderer.invoke('backend:syncFromWindows'),
   backendInstallDistro: (name: string) => ipcRenderer.invoke('backend:installDistro', name),
   backendDiagnose: () => ipcRenderer.invoke('backend:diagnose'),
   backendForceCleanup: () => ipcRenderer.invoke('backend:forceCleanup'),

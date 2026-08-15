@@ -49,7 +49,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean = isRunning): Promise<void> {
+function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean = isRunning, verifyDsh = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now()
     const tick = (): void => {
@@ -58,8 +58,21 @@ function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean = is
         return
       }
       const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2500 }, (res) => {
-        res.resume()
-        resolve()
+        if (!verifyDsh) {
+          res.resume()
+          resolve()
+          return
+        }
+        // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）
+        let body = ''
+        res.on('data', (b: Buffer) => {
+          body += b.toString()
+          if (body.length > 65536) req.destroy()
+        })
+        res.on('end', () => {
+          if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) resolve()
+          else setTimeout(tick, 500)
+        })
       })
       req.on('timeout', () => req.destroy())
       req.on('error', () => {
@@ -108,21 +121,24 @@ async function startWslServer(): Promise<void> {
   if (!node || !bin || !home || !pidfile || !logfile) throw new Error('WSL 后端尚未部署，请先一键部署')
   const binWin = wslDshBinWindows()
   if (!binWin || !existsSync(binWin)) throw new Error('WSL 内 dsh 未安装，请先在仪表盘部署')
-  const err = await preflightWsl(settings.port)
+  // WSL 独立端口（settings.wslPort，默认 3081）——与 Windows 侧 port 隔离，
+  // 避免与本机 dsh/旧版应用冲突导致状态误判与 localhost 转发混淆
+  const port = settings.wslPort || 3081
+  const err = await preflightWsl(port)
   if (err) throw new Error(err)
   // 工作区：settings.workspace 为空或非法时回退发行版 HOME
   const ws = settings.workspace && validateLinuxPath(settings.workspace) ? settings.workspace : settings.wslHome
-  pushLog(`启动 WSL dsh: ${node} ${bin} --profile web --port ${settings.port}（${distro}）`)
+  pushLog(`启动 WSL dsh: ${node} ${bin} --profile web --port ${port}（${distro}）`)
   // 关键坑（PoC 实测）：wsl 的 bash 是进程组长 → setsid 必然 fork → `$!` 是已退出的
   // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其
   // pgid，pidfile 存 `<pid> <pgid>` 两列，停止时优先按进程组杀。
-  const pattern = `@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`
+  const pattern = `@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${port}`
   // 注意：`&` 本身是命令分隔符，其后不能跟 `;`/`&&`（bash 语法错误），
   // 因此 `&` 与 `sleep 1.5` 合并为同一元素；其余用 `; ` 连接
   const script = [
     `mkdir -p ${bashQuote(home)}`,
     `cd ${bashQuote(ws)}`,
-    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${settings.port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
+    `DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
     // grep -vw $$：pgrep -f 会匹配运行本脚本的 bash 自身（命令行含 pattern 文本），必须排除
     `PID=$(pgrep -u $(id -un) -f ${bashQuote(pattern)} | grep -vw $$ | head -1)`,
     `PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')`,
@@ -137,7 +153,8 @@ async function startWslServer(): Promise<void> {
   wslStalePid = null
   lastExit = null
   try {
-    await waitForPort(settings.port, 120000, () => wslRunning)
+    // verifyDsh：探测响应必须是 dsh 页面（防 Windows 侧同端口服务误判）
+    await waitForPort(port, 120000, () => wslRunning, true)
   } catch (e) {
     wslRunning = false
     throw e
@@ -161,7 +178,7 @@ async function stopWslServer(): Promise<void> {
     if (await pidAlive(info.pid)) {
       // 残留：按命令行精确匹配（限当前用户），不 terminate 发行版
       const settings = loadSettings()
-      const pattern = bashQuote(`@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`)
+      const pattern = bashQuote(`@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.wslPort || 3081}`)
       await runWslBash(`pkill -u $(id -un) -f ${pattern} 2>/dev/null`, { silent: true })
       await sleep(800)
     }
@@ -175,7 +192,7 @@ async function stopWslServer(): Promise<void> {
 /** 强制清理残留进程（UI「强制清理」按钮） */
 export async function forceCleanupWsl(): Promise<boolean> {
   const settings = loadSettings()
-  const pattern = bashQuote(`@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.port}`)
+  const pattern = bashQuote(`@deepseek-ai/dsh/lib/bin\\.js.*--profile web.*--port ${settings.wslPort || 3081}`)
   const res = await runWslBash(`pkill -u $(id -un) -f ${pattern} 2>/dev/null`, { silent: true })
   await sleep(500)
   const pidfile = wslPidfileLinux()

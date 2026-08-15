@@ -1,8 +1,8 @@
 // 应用入口：窗口/托盘/生命周期编排 + 启动流程
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
-import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, PluginOpResult, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
@@ -11,7 +11,7 @@ import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
-import { listBackups, listInstalledPlugins, restoreBackup, searchPlugins, installPlugin, uninstallPlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
+import { listBackups, listInstalledPlugins, restoreBackup, runPnpm, searchPlugins, installPlugin, uninstallPlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
@@ -95,7 +95,6 @@ function createDashboard(): BrowserWindow {
 }
 
 function createMain(): BrowserWindow {
-  const s = loadSettings()
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -117,7 +116,7 @@ function createMain(): BrowserWindow {
       win.webContents.reload()
     }
   })
-  void win.loadURL(`http://127.0.0.1:${s.port || 3080}`)
+  void win.loadURL(`http://127.0.0.1:${webPort()}`)
   win.webContents.on('did-finish-load', () => {
     webUIStale = false
   })
@@ -168,6 +167,12 @@ function notifyWindows(): BrowserWindow[] {
   return list
 }
 
+/** 当前后端生效的 dsh 端口（WSL 独立端口，与 Windows 侧隔离） */
+function webPort(): number {
+  const s = loadSettings()
+  return s.backend === 'wsl' ? s.wslPort || 3081 : s.port || 3080
+}
+
 function buildStatus(): AppStatus {
   const s = loadSettings()
   const rt = resolveRuntime()
@@ -175,8 +180,8 @@ function buildStatus(): AppStatus {
   return {
     phase,
     running: wslMode ? wslIsRunning() : isRunning(),
-    port: s.port || 3080,
-    url: `http://127.0.0.1:${s.port || 3080}`,
+    port: webPort(),
+    url: `http://127.0.0.1:${webPort()}`,
     installedVersion: wslMode ? wslInstalledVersion() : installedVersion(),
     latestVersion: latestVersionCache,
     workspace: wslMode ? (s.workspace || s.wslHome || '') : (s.workspace || process.env.USERPROFILE || process.cwd()),
@@ -270,24 +275,35 @@ async function ensureInstalled(): Promise<void> {
   await doInstall(loadSettings().dshVersion || 'latest')
 }
 
+// 启动互斥：boot()/托盘/按钮可能并发触发 startDsh，重复启动会导致
+// 多个 dsh 进程抢端口、状态在 starting/error 间横跳（用户实测问题）
+let starting = false
+
 async function startDsh(): Promise<AppStatus> {
-  await ensureInstalled()
-  phase = 'starting'
-  error = null
-  broadcastStatus()
-  broadcastProgress({ phase: 'starting', message: '正在启动服务…' })
+  if (starting) return buildStatus()
+  if (isRunning() || wslIsRunning()) return buildStatus()
+  starting = true
   try {
-    await startServer(onServerExit)
-    phase = 'running'
+    await ensureInstalled()
+    phase = 'starting'
     error = null
-    openMain()
-  } catch (e) {
-    phase = 'error'
-    error = (e as Error).message
-    broadcastProgress({ phase: 'error', message: error })
+    broadcastStatus()
+    broadcastProgress({ phase: 'starting', message: '正在启动服务…' })
+    try {
+      await startServer(onServerExit)
+      phase = 'running'
+      error = null
+      openMain()
+    } catch (e) {
+      phase = 'error'
+      error = (e as Error).message
+      broadcastProgress({ phase: 'error', message: error })
+    }
+    broadcastStatus()
+    return buildStatus()
+  } finally {
+    starting = false
   }
-  broadcastStatus()
-  return buildStatus()
 }
 
 async function restartForPluginChange(): Promise<void> {
@@ -427,9 +443,60 @@ async function runBackendSetup(distro: string): Promise<PluginOpResult> {  if (!
   if (!setsid) {
     return { ok: false, message: '发行版缺少 setsid（util-linux），请先运行: sudo apt install util-linux（部署已完成，修复后即可启动）' }
   }
-  emit('verify', 100, '部署完成')
+  emit('verify', 98, '从本机同步插件/预设/会话…')
+  const sync = await syncFromWindows((m) => emit('verify', 98, '同步: ' + m))
+  if (!sync.ok) pushLog('部署后自动同步失败（可稍后在「运行后端」面板手动同步）: ' + sync.message)
+  emit('verify', 100, sync.ok ? '部署完成（已同步本机插件/预设/会话）' : '部署完成（同步失败，请手动同步）')
   broadcastStatus()
-  return { ok: true, message: `WSL 后端部署完成（${distro}），dsh@${target}` }
+  return { ok: true, message: `WSL 后端部署完成（${distro}），dsh@${target}${sync.ok ? '，已同步本机数据' : '（同步失败: ' + sync.message + '）'}` }
+}
+
+/**
+ * 从本机 dsh-home 同步配置/插件/预设/会话到 WSL dsh-home（v0.2.0）：
+ * 1. 复制配置层（排除 node_modules / pnpm 快照）：.agent-presets、sessions、storages、
+ *    super-injector、profiles/web 的 package.json/pnpm-workspace.yaml/pnpm-lock.yaml/cordis*.yml、凭据散文件
+ * 2. WSL 内 pnpm install 重建插件依赖（平台正确的二进制）
+ * 调用方保证：同步在服务停止状态下进行（与备份同原子性规则）。
+ */
+async function syncFromWindows(emit?: (msg: string) => void): Promise<PluginOpResult> {
+  const s = loadSettings()
+  const d = currentDistro()
+  const winHome = dshHome()
+  const wslHomeU = wslDshHomeWindows()
+  const wslHomeL = wslDshHomeLinux()
+  if (s.backend !== 'wsl' || !d || !wslHomeU || !wslHomeL) return { ok: false, message: '需要先切换到 WSL 后端并完成部署' }
+  if (!existsSync(winHome)) return { ok: false, message: '本机 dsh-home 不存在' }
+  const log = (m: string): void => {
+    pushLog('同步: ' + m)
+    emit?.(m)
+  }
+  // 配置层排除规则：node_modules 由 WSL 内 pnpm install 重建（平台不同），快照文件冗余
+  const isSyncable = (rel: string): boolean => !/node_modules/.test(rel) && !/\.mkts-snapshot/.test(rel)
+  try {
+    for (const entry of readdirSync(winHome, { withFileTypes: true })) {
+      const rel = entry.name
+      if (!isSyncable(rel)) continue
+      const src = join(winHome, rel)
+      const dst = toUnc(d, `${wslHomeL}/${rel}`)
+      log(`${entry.isDirectory() ? '目录' : '文件'} ${rel} …`)
+      if (entry.isDirectory()) {
+        mkdirSync(dst, { recursive: true })
+        cpSync(src, dst, { recursive: true, filter: isSyncable })
+      } else {
+        mkdirSync(dirname(dst), { recursive: true })
+        copyFileSync(src, dst)
+      }
+    }
+    log('WSL 内 pnpm install 重建插件依赖（平台正确）…')
+    const r = await runPnpm(['install'])
+    if (r.code !== 0) {
+      const last = r.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
+      return { ok: false, message: `插件依赖重建失败: ${last || 'exit ' + r.code}` }
+    }
+    return { ok: true, message: '已从本机同步插件/预设/会话到 WSL' }
+  } catch (e) {
+    return { ok: false, message: '同步失败: ' + (e as Error).message }
+  }
 }
 
 async function backendDiagnose(): Promise<string[]> {
@@ -641,6 +708,14 @@ const controller: Controller = {
     return buildBackendInfo()
   },
   backendSetup: (distro: string) => runBackendSetup(distro),
+  backendSyncFromWindows: async () => {
+    // 与备份同原子性规则：停服 → 同步 → 恢复原运行状态
+    const wasRunning = wslIsRunning()
+    if (wasRunning) await stopServer()
+    const r = await syncFromWindows()
+    if (wasRunning) await restartServer(onServerExit)
+    return r
+  },
   backendInstallDistro: async (name: string) => {
     if (!validateIpcArg(name) || !VALID_DISTRO_RE.test(name)) return { ok: false, message: '非法发行版名' }
     try {

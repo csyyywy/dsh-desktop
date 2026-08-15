@@ -87,8 +87,15 @@ const PHASE_META: Record<string, { label: string; color: string }> = {
 
 export default function FileBridgePanel() {
   const status = useStatus()
-  const [win, setWin] = useState<Pane>(() => ({ ...emptyPane('win'), path: 'C:\\Users' }))
-  const [wsl, setWsl] = useState<Pane>(() => ({ ...emptyPane('wsl'), path: '/home' }))
+  // 位置记忆（localStorage）：win 侧默认盘符列表（''），wsl 侧默认 /home
+  const [win, setWin] = useState<Pane>(() => ({
+    ...emptyPane('win'),
+    path: localStorage.getItem('dsh.fsb.winPath') ?? ''
+  }))
+  const [wsl, setWsl] = useState<Pane>(() => ({
+    ...emptyPane('wsl'),
+    path: localStorage.getItem('dsh.fsb.wslPath') ?? '/home'
+  }))
   const [jobs, setJobs] = useState<FsTransferProgress[]>([])
   const [busy, setBusy] = useState(false)
   const [tInput, setTInput] = useState('')
@@ -97,13 +104,13 @@ export default function FileBridgePanel() {
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
 
-  // 初始路径：按当前工作区智能取
+  // 初始路径：记忆优先，无记忆时按当前工作区智能取
   useEffect(() => {
     if (!status) return
     setWin((p) => {
-      if (p.path !== 'C:\\Users') return p
+      if (p.path !== '') return p
       const ws = status.workspace
-      return { ...p, path: /^[A-Za-z]:[\\/]/.test(ws) ? ws : 'C:\\Users' }
+      return { ...p, path: /^[A-Za-z]:[\\/]/.test(ws) ? ws : '' }
     })
     setWsl((p) => {
       if (p.path !== '/home') return p
@@ -133,6 +140,9 @@ export default function FileBridgePanel() {
     try {
       const entries = await window.dsh.fsbList(side, path)
       set({ side, path, entries, loading: false, error: '', selected: new Set() })
+      // 记忆当前位置（win 侧 '' = 盘符列表；wsl 侧路径）
+      if (side === 'win') localStorage.setItem('dsh.fsb.winPath', path)
+      else localStorage.setItem('dsh.fsb.wslPath', path)
     } catch (e) {
       set((p) => ({ ...p, loading: false, error: (e as Error).message }))
     }
@@ -171,14 +181,25 @@ export default function FileBridgePanel() {
 
   const up = (side: FsSide): void => {
     const p = side === 'win' ? win.path : wsl.path
-    const sep = side === 'win' ? '\\' : '/'
-    const idx = p.lastIndexOf(sep)
+    if (side === 'win') {
+      if (p === '') return // 已在盘符列表根
+      if (/^[A-Za-z]:\\$/.test(p)) {
+        void load('win', '') // 盘符根 → 盘符列表
+        return
+      }
+      const idx = p.lastIndexOf('\\')
+      if (idx <= 2) return
+      void load('win', p.slice(0, idx))
+      return
+    }
+    if (p === '/') return
+    const idx = p.lastIndexOf('/')
     if (idx <= 0) return
-    void load(side, p.slice(0, idx))
+    void load('wsl', p.slice(0, idx))
   }
 
   const root = (side: FsSide): void => {
-    void load(side, side === 'win' ? 'C:\\' : '/')
+    void load(side, side === 'win' ? '' : '/') // win 根 = 盘符列表
   }
 
   const toggle = (side: FsSide, path: string): void => {
@@ -299,7 +320,12 @@ export default function FileBridgePanel() {
         }`}
       >
         <div className="flex items-center gap-1 border-b border-white/10 p-2">
-          <Button variant="ghost" onClick={() => up(pane.side)} title="上级目录" disabled={pane.path.length <= (pane.side === 'win' ? 3 : 1)}>
+          <Button
+            variant="ghost"
+            onClick={() => up(pane.side)}
+            title="上级目录"
+            disabled={pane.side === 'win' ? pane.path === '' || /^[A-Za-z]:\\$/.test(pane.path) : pane.path === '/'}
+          >
             ↑
           </Button>
           <Button variant="ghost" onClick={() => root(pane.side)} title="根目录">
