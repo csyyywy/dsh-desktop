@@ -55,6 +55,8 @@ export interface PluginUpdateInfo {
   updateAvailable: boolean
   /** 检查失败原因（网络/限流等），有值时 updateAvailable 恒为 false */
   error?: string
+  /** 非失败的中性说明（如"本地链接依赖"），UI 用灰色徽标展示，不算错误 */
+  note?: string
 }
 
 export interface PluginOpResult {

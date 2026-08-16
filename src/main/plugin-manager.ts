@@ -346,7 +346,8 @@ export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
       const spec = specOf(p.name)
       if (!spec) return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '依赖记录缺失' }
       if (spec.startsWith('link:')) {
-        return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '本地链接依赖' }
+        // 本地链接依赖（开发用）：不是失败，只是无需检查更新
+        return { name: p.name, current: p.version, latest: '', updateAvailable: false, note: '本地链接依赖' }
       }
       try {
         const { latest, short } = await latestVersionOf(p.name, spec)

@@ -932,6 +932,11 @@ function PluginRow({
               可更新 → v{updateInfo.latest}
             </span>
           )}
+          {updateInfo?.note && (
+            <span className="shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-slate-400" title={updateInfo.note}>
+              {updateInfo.note}
+            </span>
+          )}
           {updateInfo?.error && (
             <span className="shrink-0 rounded-full bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-300" title={updateInfo.error}>
               检查失败
