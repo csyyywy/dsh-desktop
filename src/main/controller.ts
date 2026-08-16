@@ -1,4 +1,4 @@
-import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateResult, BackendInfo, BackendMode, FsEntry, FsSide, FsTransferRequest, FsTranslateResult, PluginInfo, PluginOpResult } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateResult, BackendInfo, BackendMode, FsEntry, FsSide, FsTransferRequest, FsTranslateResult, PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
 
 /** 外壳对外暴露的操作集合：IPC 与托盘都通过它驱动 */
 export interface Controller {
@@ -23,6 +23,8 @@ export interface Controller {
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
+  checkPluginUpdates(): Promise<PluginUpdateInfo[]>
+  updatePlugin(name: string): Promise<PluginOpResult>
   pickBackgroundImage(): Promise<string | null>
   openExternal(url: string): void
   listBackups(): Promise<string[]>

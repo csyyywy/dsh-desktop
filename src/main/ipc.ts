@@ -23,6 +23,8 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('plugins:search', (_e, query: string, sort?: string, source?: string) => controller.searchPlugins(query, sort, source))
   ipcMain.handle('plugins:install', (_e, name: string, source?: string) => controller.installPlugin(name, source))
   ipcMain.handle('plugins:uninstall', (_e, name: string) => controller.uninstallPlugin(name))
+  ipcMain.handle('plugins:checkUpdates', () => controller.checkPluginUpdates())
+  ipcMain.handle('plugins:update', (_e, name: string) => controller.updatePlugin(name))
   ipcMain.handle('app:pickBackgroundImage', () => controller.pickBackgroundImage())
   ipcMain.handle('app:openExternal', (_e, url: string) => controller.openExternal(url))
   ipcMain.handle('plugins:backups', () => controller.listBackups())

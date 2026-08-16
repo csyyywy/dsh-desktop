@@ -45,6 +45,18 @@ export interface PluginInfo {
   repoUrl?: string
 }
 
+/** 插件更新检查结果（installed 版本 vs 最新可用版本） */
+export interface PluginUpdateInfo {
+  name: string
+  /** 已装版本（git 依赖为当前锁定 commit 短哈希） */
+  current: string
+  /** 最新可用版本（git 依赖为远端 HEAD 短哈希） */
+  latest: string
+  updateAvailable: boolean
+  /** 检查失败原因（网络/限流等），有值时 updateAvailable 恒为 false */
+  error?: string
+}
+
 export interface PluginOpResult {
   ok: boolean
   message: string
@@ -132,6 +144,10 @@ export interface DshApi {
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
+  /** 检查所有已安装插件的可用更新（npm 包查 registry latest；git 依赖查远端 HEAD） */
+  checkPluginUpdates(): Promise<PluginUpdateInfo[]>
+  /** 更新指定已安装插件到最新版本 */
+  updatePlugin(name: string): Promise<PluginOpResult>
   pickBackgroundImage(): Promise<string | null>
   openExternal(url: string): Promise<void>
   listBackups(): Promise<string[]>

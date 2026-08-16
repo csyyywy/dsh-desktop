@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo } from '../../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo, PluginUpdateInfo } from '../../shared/types'
 import { useLogs, useStatus, useSettings, updateSettings } from './hooks'
 import BackendPanel from './BackendPanel'
 import FileBridgePanel from './FileBridgePanel'
@@ -636,9 +636,20 @@ function PluginsPanel() {
   const [sort, setSort] = useState<'stars' | 'updated'>('stars')
   const [source, setSource] = useState<'github' | 'npm'>('github')
   const [customSpec, setCustomSpec] = useState('')
+  const [updates, setUpdates] = useState<Record<string, PluginUpdateInfo>>({})
+  const [checking, setChecking] = useState(false)
 
   const refreshInstalled = async (): Promise<void> => {
     setInstalled(await window.dsh.listPlugins())
+  }
+  const refreshUpdates = async (): Promise<void> => {
+    setChecking(true)
+    try {
+      const list = await window.dsh.checkPluginUpdates()
+      setUpdates(Object.fromEntries(list.map((u) => [u.name, u])))
+    } finally {
+      setChecking(false)
+    }
   }
   const refreshBackups = async (): Promise<void> => {
     setBackups(await window.dsh.listBackups())
@@ -655,6 +666,7 @@ function PluginsPanel() {
 
   useEffect(() => {
     void refreshInstalled()
+    void refreshUpdates()
     void refreshBackups()
     void search('')
   }, [])
@@ -666,6 +678,7 @@ function PluginsPanel() {
     setMsg(r.message)
     setBusy(null)
     await refreshInstalled()
+    await refreshUpdates()
     await refreshBackups()
     await search(query)
   }
@@ -676,6 +689,18 @@ function PluginsPanel() {
     setMsg(r.message)
     setBusy(null)
     await refreshInstalled()
+    await refreshUpdates()
+    await refreshBackups()
+    await search(query)
+  }
+  const doUpdate = async (name: string): Promise<void> => {
+    setBusy(name)
+    setMsg('')
+    const r = await window.dsh.updatePlugin(name)
+    setMsg(r.message)
+    setBusy(null)
+    await refreshInstalled()
+    await refreshUpdates()
     await refreshBackups()
     await search(query)
   }
@@ -789,13 +814,29 @@ function PluginsPanel() {
       </Card>
 
       <Card>
-        <div className="mb-3 text-sm font-medium text-slate-200">已安装（{installed.length}）</div>
+        <div className="mb-3 flex items-center justify-between text-sm font-medium text-slate-200">
+          <span>已安装（{installed.length}）</span>
+          <button
+            disabled={checking}
+            onClick={() => void refreshUpdates()}
+            className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-brand-500/20 hover:text-brand-300 disabled:opacity-50"
+          >
+            {checking ? '检查中…' : '检查更新'}
+          </button>
+        </div>
         {installed.length === 0 ? (
           <p className="text-sm text-slate-500">尚未安装任何插件，从下方官方仓库搜索安装。</p>
         ) : (
           <div className="space-y-2">
             {installed.map((p) => (
-              <PluginRow key={p.name} p={p} busy={busy} onUninstall={() => doUninstall(p.name)} />
+              <PluginRow
+                key={p.name}
+                p={p}
+                busy={busy}
+                updateInfo={updates[p.name]}
+                onUninstall={() => doUninstall(p.name)}
+                onUpdate={() => doUpdate(p.name)}
+              />
             ))}
           </div>
         )}
@@ -866,13 +907,17 @@ function formatDate(iso: string): string {
 function PluginRow({
   p,
   busy,
+  updateInfo,
   onInstall,
-  onUninstall
+  onUninstall,
+  onUpdate
 }: {
   p: PluginInfo
   busy: string | null
+  updateInfo?: PluginUpdateInfo
   onInstall?: () => void
   onUninstall?: () => void
+  onUpdate?: () => void
 }) {
   const working = busy === p.name
   const displayName = p.repo || p.name
@@ -882,6 +927,16 @@ function PluginRow({
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium text-slate-100">{displayName}</span>
           {p.version && <span className="shrink-0 text-xs text-slate-500">v{p.version}</span>}
+          {updateInfo?.updateAvailable && (
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300">
+              可更新 → v{updateInfo.latest}
+            </span>
+          )}
+          {updateInfo?.error && (
+            <span className="shrink-0 rounded-full bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-300" title={updateInfo.error}>
+              检查失败
+            </span>
+          )}
           {p.stars > 0 && <span className="shrink-0 text-xs text-amber-400">★ {p.stars}</span>}
           {p.updatedAt && <span className="shrink-0 text-xs text-slate-500">{formatDate(p.updatedAt)}</span>}
           {p.installed && (
@@ -899,15 +954,26 @@ function PluginRow({
         )}
       </div>
       {p.installed ? (
-        onUninstall && (
-          <button
-            disabled={working}
-            onClick={onUninstall}
-            className="shrink-0 rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-50"
-          >
-            {working ? '处理中…' : '卸载'}
-          </button>
-        )
+        <div className="flex shrink-0 gap-2">
+          {onUpdate && updateInfo?.updateAvailable && (
+            <button
+              disabled={working}
+              onClick={onUpdate}
+              className="rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-brand-400 disabled:opacity-50"
+            >
+              {working ? '更新中…' : '更新'}
+            </button>
+          )}
+          {onUninstall && (
+            <button
+              disabled={working}
+              onClick={onUninstall}
+              className="shrink-0 rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-50"
+            >
+              {working ? '处理中…' : '卸载'}
+            </button>
+          )}
+        </div>
       ) : (
         onInstall && (
           <button

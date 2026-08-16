@@ -15,7 +15,7 @@ import { dataDir, dshHome, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
 import { currentDistro, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin, bashQuote } from './wsl'
-import type { PluginInfo, PluginOpResult } from '../shared/types'
+import type { PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
 
 const PROFILE = 'web'
 
@@ -240,6 +240,124 @@ export function listInstalledRepos(): Set<string> {
   }
 }
 
+/** 已安装包的 node_modules 真实版本（读不到/占位包返回空串） */
+function installedVersionOf(name: string): string {
+  try {
+    const pkgPath = join(profileDir(), 'node_modules', name, 'package.json')
+    if (!existsSync(pkgPath)) return ''
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    return typeof pkg.version === 'string' ? pkg.version : ''
+  } catch {
+    return ''
+  }
+}
+
+/** profile package.json 里某依赖的 spec（semver 范围或 git+https://...#commit） */
+function specOf(name: string): string | null {
+  try {
+    const pkgPath = join(profileDir(), 'package.json')
+    if (!existsSync(pkgPath)) return null
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    const deps = (pkg.dependencies ?? {}) as Record<string, string>
+    return deps[name] ?? null
+  } catch {
+    return null
+  }
+}
+
+function isGitSpec(spec: string): boolean {
+  return /^(git\+|git:)/.test(spec)
+}
+
+/** git spec 里的锁定 commit（#<sha> 部分），无则 null */
+function gitPinnedCommit(spec: string): string | null {
+  const i = spec.lastIndexOf('#')
+  return i === -1 ? null : spec.slice(i + 1)
+}
+
+/** 简易 semver 比较：a > b（忽略前导 v，逐段数值比较） */
+function semverGt(a: string, b: string): boolean {
+  const pa = a.replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0)
+  const pb = b.replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const va = pa[i] ?? 0
+    const vb = pb[i] ?? 0
+    if (va !== vb) return va > vb
+  }
+  return false
+}
+
+/** 远端最新可用版本：npm 包 → registry <name>/latest；git 依赖 → GitHub 仓库 HEAD commit */
+async function latestVersionOf(name: string, spec: string): Promise<{ latest: string; short: boolean }> {
+  if (isGitSpec(spec)) {
+    const repo = /github\.com[/:]([^/]+\/[^/#?]+)/.exec(spec)?.[1]?.replace(/\.git$/, '')
+    if (!repo) throw new Error('无法解析 git 仓库地址')
+    const headers: Record<string, string> = { 'User-Agent': 'dsh-desktop', Accept: 'application/vnd.github+json' }
+    const token = loadSettings().githubToken?.trim()
+    if (token) headers.Authorization = `Bearer ${token}`
+    const j = (await curlJson(`https://api.github.com/repos/${repo}/commits/HEAD`, headers)) as {
+      sha?: string
+      message?: string
+    }
+    if (!j.sha) throw new Error(j.message || 'GitHub API 无响应（可能限流）')
+    return { latest: j.sha, short: true }
+  }
+  const registry = (loadSettings().npmRegistry?.trim() || 'https://registry.npmjs.org').replace(/\/+$/, '')
+  // scoped 包名中的 / 需编码为 %2F（registry 元数据端点格式）
+  const url = `${registry}/${encodeURIComponent(name)}/latest`
+  const j = (await curlJson(url)) as { version?: string; error?: string }
+  if (!j.version) throw new Error(j.error || 'registry 无响应')
+  return { latest: j.version, short: false }
+}
+
+export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
+  const installed = await listInstalledPlugins()
+  const out: PluginUpdateInfo[] = await Promise.all(
+    installed.map(async (p) => {
+      const spec = specOf(p.name)
+      if (!spec) return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '依赖记录缺失' }
+      try {
+        const { latest, short } = await latestVersionOf(p.name, spec)
+        const current = p.version || (isGitSpec(spec) ? (gitPinnedCommit(spec)?.slice(0, 12) ?? '') : '')
+        const updateAvailable = short
+          ? Boolean(current) && current !== latest
+          : Boolean(current) && semverGt(latest, current)
+        return { name: p.name, current, latest: short ? latest.slice(0, 12) : latest, updateAvailable }
+      } catch (e) {
+        return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: (e as Error).message }
+      }
+    })
+  )
+  return out
+}
+
+export async function updatePlugin(name: string): Promise<PluginOpResult> {
+  searchCache = null
+  const spec = specOf(name)
+  if (!spec) return { ok: false, message: `「${name}」不在依赖列表里，无法更新` }
+  await backupProfile()
+  const npmName = isGitSpec(spec) ? null : name
+  if (npmName) allowBuild(npmName)
+  // git 依赖：去掉 #commit 锁定，重装到最新 HEAD；npm 包：装 latest（同时刷新依赖范围）
+  const target = isGitSpec(spec) ? spec.replace(/#[^#]*$/, '') : `${name}@latest`
+  pushLog(`更新插件 ${name}: ${spec} -> ${target}`)
+  let result = await runPnpm(['add', target])
+  for (let attempt = 0; result.code !== 0 && attempt < 3; attempt++) {
+    const ignored = parseIgnoredBuilds(result.output)
+    if (ignored.length === 0) break
+    approveBuilds(ignored)
+    result = await runPnpm(['add', target])
+  }
+  const { code, output } = result
+  if (code !== 0) {
+    const last = output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
+    return { ok: false, message: last || `更新失败 (exit ${code})` }
+  }
+  reconcileBundles(profileDir(), [name], [])
+  const now = installedVersionOf(name)
+  return { ok: true, message: now ? `已更新 ${name} → v${now}` : `已更新 ${name}` }
+}
+
 export async function listInstalledPlugins(): Promise<PluginInfo[]> {
   const pkgPath = join(profileDir(), 'package.json')
   if (!existsSync(pkgPath)) return []
@@ -249,7 +367,12 @@ export async function listInstalledPlugins(): Promise<PluginInfo[]> {
     return Object.entries(deps).map(([name, spec]) => {
       const m = /github\.com[/:]([^/]+\/[^/#?]+)/.exec(spec)
       const repo = m ? m[1].replace(/\.git$/, '') : undefined
-      return { name, repo, version: '', description: '', installed: true, stars: 0 }
+      let version = installedVersionOf(name)
+      if (!version && isGitSpec(spec)) {
+        const commit = gitPinnedCommit(spec)
+        version = commit ? commit.slice(0, 12) : 'git'
+      }
+      return { name, repo, version, description: '', installed: true, stars: 0 }
     })
   } catch {
     return []

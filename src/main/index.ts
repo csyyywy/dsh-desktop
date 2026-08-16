@@ -12,7 +12,7 @@ import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
-import { listBackups, listInstalledPlugins, restoreBackup, runPnpm, searchPlugins, installPlugin, uninstallPlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
+import { listBackups, listInstalledPlugins, restoreBackup, runPnpm, searchPlugins, installPlugin, uninstallPlugin, checkPluginUpdates, updatePlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
@@ -795,6 +795,20 @@ const controller: Controller = {
       return r
     }
     const r = await uninstallPlugin(name)
+    if (r.ok && isRunning()) await restartForPluginChange()
+    return r
+  },
+  checkPluginUpdates: () => checkPluginUpdates(),
+  updatePlugin: async (name) => {
+    if (loadSettings().backend === 'wsl') {
+      // WSL：停服 → 更新（备份在停止期间快照）→ 恢复原运行状态
+      const wasRunning = wslIsRunning()
+      if (wasRunning) await stopServer()
+      const r = await updatePlugin(name)
+      if (r.ok && wasRunning) await restartServer(onServerExit)
+      return r
+    }
+    const r = await updatePlugin(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   },
