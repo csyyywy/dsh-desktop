@@ -49,7 +49,10 @@ export async function runPnpm(args: string[]): Promise<{ code: number; output: s
     return { code: 1, output: '配置目录尚未初始化，请先启动一次服务' }
   }
   const registry = loadSettings().npmRegistry
-  const fullArgs = registry ? [...args, '--registry', registry] : args
+  // --registry 只在需要解析包元数据的命令（add/update/install 等）上有意义；
+  // pnpm remove 不接受该选项（Unknown option: 'registry'），remove 不访问 registry。
+  const noRegistry = args[0] === 'remove' || args[0] === 'rebuild' || args[0] === 'list' || args[0] === 'outdated'
+  const fullArgs = registry && !noRegistry ? [...args, '--registry', registry] : args
   if (loadSettings().backend === 'wsl') {
     const node = wslNodeBin()
     const pnpm = wslPnpmCjs()
