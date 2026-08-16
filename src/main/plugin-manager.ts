@@ -275,6 +275,26 @@ function gitPinnedCommit(spec: string): string | null {
   return i === -1 ? null : spec.slice(i + 1)
 }
 
+/** 从 pnpm-lock.yaml 的 importer 段解析 git 依赖当前解析到的 commit（package.json 不写 #sha，只有 lockfile 有） */
+function gitResolvedCommit(name: string, spec: string): string | null {
+  try {
+    const lockPath = join(profileDir(), 'pnpm-lock.yaml')
+    if (!existsSync(lockPath)) return null
+    const lines = readFileSync(lockPath, 'utf8').split(/\r?\n/)
+    const bare = spec.replace(/#[^#]*$/, '')
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^\s+specifier:\s*(\S+)\s*$/.exec(lines[i])
+      if (!m || m[1] !== bare) continue
+      const v = /^\s+version:\s*(\S+)\s*$/.exec(lines[i + 1] ?? '')
+      const sha = v ? /#([0-9a-f]{40,64})$/.exec(v[1]) : null
+      if (sha) return sha[1]
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
 /** 简易 semver 比较：a > b（忽略前导 v，逐段数值比较） */
 function semverGt(a: string, b: string): boolean {
   const pa = a.replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0)
@@ -287,20 +307,26 @@ function semverGt(a: string, b: string): boolean {
   return false
 }
 
-/** 远端最新可用版本：npm 包 → registry <name>/latest；git 依赖 → GitHub 仓库 HEAD commit */
-async function latestVersionOf(name: string, spec: string): Promise<{ latest: string; short: boolean }> {
+/** 远端最新可用信息：npm 包 → registry <name>/latest；git 依赖 → 最新 release tag + HEAD commit */
+async function latestVersionOf(
+  name: string,
+  spec: string
+): Promise<{ latest: string; short: boolean; commit?: string }> {
   if (isGitSpec(spec)) {
     const repo = /github\.com[/:]([^/]+\/[^/#?]+)/.exec(spec)?.[1]?.replace(/\.git$/, '')
     if (!repo) throw new Error('无法解析 git 仓库地址')
     const headers: Record<string, string> = { 'User-Agent': 'dsh-desktop', Accept: 'application/vnd.github+json' }
     const token = loadSettings().githubToken?.trim()
     if (token) headers.Authorization = `Bearer ${token}`
-    const j = (await curlJson(`https://api.github.com/repos/${repo}/commits/HEAD`, headers)) as {
-      sha?: string
-      message?: string
-    }
-    if (!j.sha) throw new Error(j.message || 'GitHub API 无响应（可能限流）')
-    return { latest: j.sha, short: true }
+    const [rel, head] = await Promise.allSettled([
+      curlJson(`https://api.github.com/repos/${repo}/releases/latest`, headers),
+      curlJson(`https://api.github.com/repos/${repo}/commits/HEAD`, headers),
+    ])
+    const tag = rel.status === 'fulfilled' ? ((rel.value as { tag_name?: string }).tag_name ?? '').replace(/^v/i, '') : ''
+    const sha = head.status === 'fulfilled' ? (head.value as { sha?: string }).sha : undefined
+    if (tag) return { latest: tag, short: false, commit: sha }
+    if (sha) return { latest: sha.slice(0, 12), short: true, commit: sha }
+    throw new Error('GitHub API 无响应（可能限流）')
   }
   const registry = (loadSettings().npmRegistry?.trim() || 'https://registry.npmjs.org').replace(/\/+$/, '')
   // scoped 包名中的 / 需编码为 %2F（registry 元数据端点格式）
@@ -316,9 +342,15 @@ export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
     installed.map(async (p) => {
       const spec = specOf(p.name)
       if (!spec) return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '依赖记录缺失' }
+      if (spec.startsWith('link:')) {
+        return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '本地链接依赖' }
+      }
       try {
         const { latest, short } = await latestVersionOf(p.name, spec)
-        const current = p.version || (isGitSpec(spec) ? (gitPinnedCommit(spec)?.slice(0, 12) ?? '') : '')
+        // git 依赖优先显示锁定的 commit（node_modules 版本号反映不了 commit 移动）
+        const current = isGitSpec(spec)
+          ? (gitPinnedCommit(spec) ?? gitResolvedCommit(p.name, spec) ?? p.version)?.slice(0, 12)
+          : p.version
         const updateAvailable = short
           ? Boolean(current) && current !== latest
           : Boolean(current) && semverGt(latest, current)
@@ -335,11 +367,26 @@ export async function updatePlugin(name: string): Promise<PluginOpResult> {
   searchCache = null
   const spec = specOf(name)
   if (!spec) return { ok: false, message: `「${name}」不在依赖列表里，无法更新` }
+  if (spec.startsWith('link:')) return { ok: false, message: `「${name}」是本地链接依赖（link:），无需更新` }
+  // pnpm 的 `add <name>@latest` 对已是依赖的包会静默 no-op（spec 与版本都不动但退出码 0），
+  // 因此必须先解析出精确的最新版本/commit，再显式安装。
+  let info: { latest: string; short: boolean; commit?: string }
+  try {
+    info = await latestVersionOf(name, spec)
+  } catch (e) {
+    return { ok: false, message: `无法获取「${name}」的最新版本: ${(e as Error).message}` }
+  }
   await backupProfile()
   const npmName = isGitSpec(spec) ? null : name
   if (npmName) allowBuild(npmName)
-  // git 依赖：去掉 #commit 锁定，重装到最新 HEAD；npm 包：装 latest（同时刷新依赖范围）
-  const target = isGitSpec(spec) ? spec.replace(/#[^#]*$/, '') : `${name}@latest`
+  // git 依赖：显式锁到远端最新 HEAD commit（bare spec 重装可能被 pnpm 判定无变化而跳过）
+  let target: string
+  if (isGitSpec(spec)) {
+    if (!info.commit) return { ok: false, message: `无法获取「${name}」的远端最新 commit` }
+    target = `${spec.replace(/#[^#]*$/, '')}#${info.commit}`
+  } else {
+    target = `${name}@${info.latest}`
+  }
   pushLog(`更新插件 ${name}: ${spec} -> ${target}`)
   let result = await runPnpm(['add', target])
   for (let attempt = 0; result.code !== 0 && attempt < 3; attempt++) {
@@ -355,7 +402,7 @@ export async function updatePlugin(name: string): Promise<PluginOpResult> {
   }
   reconcileBundles(profileDir(), [name], [])
   const now = installedVersionOf(name)
-  return { ok: true, message: now ? `已更新 ${name} → v${now}` : `已更新 ${name}` }
+  return { ok: true, message: now ? `已更新 ${name} → v${now}` : `已更新 ${name} → ${target}` }
 }
 
 export async function listInstalledPlugins(): Promise<PluginInfo[]> {
