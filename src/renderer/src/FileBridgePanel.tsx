@@ -73,9 +73,19 @@ interface Pane {
   loading: boolean
   error: string
   selected: Set<string>
+  /** 是否已完成过一次加载（空目录也置 true；供「切到 WSL 后端后自动加载」判定，避免空目录无限重载） */
+  loaded: boolean
 }
 
-const emptyPane = (side: FsSide): Pane => ({ side, path: '', entries: [], loading: false, error: '', selected: new Set() })
+const emptyPane = (side: FsSide): Pane => ({
+  side,
+  path: '',
+  entries: [],
+  loading: false,
+  error: '',
+  selected: new Set(),
+  loaded: false
+})
 
 const PHASE_META: Record<string, { label: string; color: string }> = {
   queued: { label: '排队', color: 'text-slate-400' },
@@ -101,6 +111,9 @@ export default function FileBridgePanel() {
   const [tInput, setTInput] = useState('')
   const [tResult, setTResult] = useState<FsTranslateResult | null>(null)
   const [tError, setTError] = useState('')
+  // 内联命名弹窗（Electron 不支持 window.prompt，新建/改名必须走自定义输入框）
+  const [namePrompt, setNamePrompt] = useState<{ title: string; initial: string; onOk: (name: string) => void } | null>(null)
+  const askName = (title: string, initial: string, onOk: (name: string) => void): void => setNamePrompt({ title, initial, onOk })
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
 
@@ -139,7 +152,7 @@ export default function FileBridgePanel() {
     set((p) => ({ ...p, loading: true, error: '' }))
     try {
       const entries = await window.dsh.fsbList(side, path)
-      set({ side, path, entries, loading: false, error: '', selected: new Set() })
+      set({ side, path, entries, loading: false, error: '', selected: new Set(), loaded: true })
       // 记忆当前位置（win 侧 '' = 盘符列表；wsl 侧路径）
       if (side === 'win') localStorage.setItem('dsh.fsb.winPath', path)
       else localStorage.setItem('dsh.fsb.wslPath', path)
@@ -163,13 +176,13 @@ export default function FileBridgePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, status])
 
-  // 切换到 WSL 后端后自动加载 wsl 侧
+  // 切换到 WSL 后端后自动加载 wsl 侧（以 loaded 标记判定，空目录不再触发无限重载）
   useEffect(() => {
-    if (status?.backend === 'wsl' && wsl.path && wsl.entries.length === 0 && !wsl.loading && !wsl.error) {
+    if (status?.backend === 'wsl' && wsl.path && !wsl.loaded && !wsl.loading && !wsl.error) {
       void load('wsl', wsl.path)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.backend, wsl.path, wsl.entries.length, wsl.loading, wsl.error, load])
+  }, [status?.backend, wsl.path, wsl.loaded, wsl.loading, wsl.error, load])
 
   const enter = (side: FsSide, entry: FsEntry): void => {
     if (!entry.isDir) {
@@ -243,22 +256,30 @@ export default function FileBridgePanel() {
     void load(side, side === 'win' ? win.path : wsl.path)
   }
 
-  const rename = async (side: FsSide, entry: FsEntry): Promise<void> => {
-    const name = window.prompt('新名称：', entry.name)
-    if (!name || name === entry.name) return
-    const r = await window.dsh.fsbRename(side, entry.path, name)
-    if (!r.ok) window.alert(r.message)
-    void load(side, side === 'win' ? win.path : wsl.path)
+  const rename = (side: FsSide, entry: FsEntry): void => {
+    askName('重命名', entry.name, (name) => {
+      if (!name || name === entry.name) return
+      void window.dsh.fsbRename(side, entry.path, name).then((r) => {
+        if (!r.ok) window.alert(r.message)
+        void load(side, side === 'win' ? win.path : wsl.path)
+      })
+    })
   }
 
-  const mkdir = async (side: FsSide): Promise<void> => {
+  const mkdir = (side: FsSide): void => {
     const p = side === 'win' ? win.path : wsl.path
-    const name = window.prompt('文件夹名称：')
-    if (!name) return
-    const sep = side === 'win' ? '\\' : '/'
-    const r = await window.dsh.fsbMkdir(side, p.endsWith(sep) ? p + name : p + sep + name)
-    if (!r.ok) window.alert(r.message)
-    void load(side, p)
+    if (p === '') {
+      window.alert('请先进入一个盘符再新建文件夹')
+      return
+    }
+    askName('新建文件夹', '', (name) => {
+      if (!name) return
+      const sep = side === 'win' ? '\\' : '/'
+      void window.dsh.fsbMkdir(side, p.endsWith(sep) ? p + name : p + sep + name).then((r) => {
+        if (!r.ok) window.alert(r.message)
+        void load(side, p)
+      })
+    })
   }
 
   const doTranslate = async (): Promise<void> => {
@@ -536,6 +557,65 @@ export default function FileBridgePanel() {
           </div>
         )}
       </Card>
+
+      {namePrompt && (
+        <NamePrompt
+          title={namePrompt.title}
+          initial={namePrompt.initial}
+          onCancel={() => setNamePrompt(null)}
+          onOk={(name) => {
+            const p = namePrompt
+            setNamePrompt(null)
+            p.onOk(name)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/** 内联命名弹窗（Electron 不支持 window.prompt 的替代实现） */
+function NamePrompt({
+  title,
+  initial,
+  onOk,
+  onCancel
+}: {
+  title: string
+  initial: string
+  onOk: (value: string) => void
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState(initial)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
+      <div
+        className="w-80 rounded-2xl border border-white/10 bg-ink-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-sm font-semibold text-white">{title}</div>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onOk(value.trim())
+            if (e.key === 'Escape') onCancel()
+          }}
+          className="mt-3 w-full rounded-xl border border-white/10 bg-ink-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-brand-500"
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onCancel}>
+            取消
+          </Button>
+          <Button onClick={() => onOk(value.trim())}>确定</Button>
+        </div>
+      </div>
     </div>
   )
 }
