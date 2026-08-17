@@ -1,6 +1,7 @@
 // 构建期下载官方便携 Node（Windows x64）到 resources/node，使绿色版「解压即用」。
 // 已存在则跳过。Node 版本固定为 22.x（满足 dsh 的 engines ^22.19 || >=24）。
-import { existsSync, mkdirSync, writeFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
+// 下载统一走系统 curl：Node 的 fetch 在带自定义 CA 的代理环境下会 TLS 校验失败。
+import { existsSync, mkdirSync, writeFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -17,6 +18,26 @@ const linuxTar = join(root, 'resources', 'node-linux.tar.xz')
 // 国内加速：DSH_NODE_MIRROR=https://npmmirror.com/mirrors/node/v22.21.1（或任意 nodejs.org/dist 镜像）
 const version = process.env.DSH_NODE_VERSION || NODE_VERSION
 const baseUrl = process.env.DSH_NODE_MIRROR || `https://nodejs.org/dist/${version}`
+
+function curlDownload(url, outPath, label = '文件') {
+  console.log(`[download-node] 下载 ${label}:`, url)
+  const ps = spawnSync(
+    'curl',
+    ['-sSL', '--max-time', '300', '-o', outPath, url],
+    { encoding: 'utf8' }
+  )
+  if (ps.status !== 0) {
+    throw new Error(`${label} 下载失败 (curl exit ${ps.status}): ` + (ps.stderr || ps.stdout || '').trim())
+  }
+  if (!existsSync(outPath)) {
+    throw new Error(`${label} 下载后文件不存在: ${outPath}`)
+  }
+  const size = statSync(outPath).size
+  if (size === 0) {
+    throw new Error(`${label} 下载结果为空: ${outPath}`)
+  }
+  console.log(`[download-node] ${label} 完成: ${outPath} (${(size / 1024 / 1024).toFixed(1)} MB)`)
+}
 
 function extractZip(zipPath, outDir) {
   const ps = spawnSync(
@@ -39,15 +60,11 @@ async function main() {
     console.log('[download-node] 已存在，跳过：', nodeExe)
   } else {
     const url = `${baseUrl}/node-${version}-win-x64.zip`
-    console.log('[download-node] 下载：', url)
-    const res = await fetch(url, { redirect: 'follow' })
-    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`)
-    const buf = Buffer.from(await res.arrayBuffer())
-
     mkdirSync(destDir, { recursive: true })
     const zipPath = join(destDir, 'node.zip')
     const tmpDir = join(destDir, '.extract')
-    writeFileSync(zipPath, buf)
+
+    curlDownload(url, zipPath, 'Windows x64 Node')
 
     mkdirSync(tmpDir, { recursive: true })
     extractZip(zipPath, tmpDir)
@@ -58,6 +75,10 @@ async function main() {
     }
     rmSync(tmpDir, { recursive: true, force: true })
     rmSync(zipPath, { force: true })
+
+    if (!existsSync(nodeExe)) {
+      throw new Error(`解压后 node.exe 不存在: ${nodeExe}`)
+    }
     console.log('[download-node] 完成：', destDir)
   }
 
@@ -68,11 +89,7 @@ async function main() {
     console.log('[download-node] Linux 版已存在，跳过：', linuxTar)
   } else {
     const url = `${baseUrl}/node-${version}-linux-x64.tar.xz`
-    console.log('[download-node] 下载 Linux 版（WSL 后端）：', url)
-    const res = await fetch(url, { redirect: 'follow' })
-    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`)
-    writeFileSync(linuxTar, Buffer.from(await res.arrayBuffer()))
-    console.log('[download-node] 完成：', linuxTar)
+    curlDownload(url, linuxTar, 'Linux x64 Node')
   }
 }
 

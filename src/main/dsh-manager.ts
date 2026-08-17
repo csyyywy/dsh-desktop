@@ -1,13 +1,25 @@
 // dsh 本体生命周期：解析运行时（内置/系统 Node）、安装、版本查询、更新/回滚。
 // 只通过 npm 安装官方 @deepseek-ai/dsh，绝不改其源码。
 import { app } from 'electron'
-import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { dataDir, loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
 import { currentDistro, runWsl, runWslBash, toUnc, wslBaseLinux, wslDshBinLinux, wslNpmCli, wslNodeBin, bashQuote } from './wsl'
+
+// 临时诊断：把运行时解析与 spawn 的真实错误落盘到 %TEMP%/dsh-runtime-diag.log，
+// 用于排查「文件存在却 spawn ENOENT」类问题（排查完成后可删除）。
+const DIAG_PATH = join(tmpdir(), 'dsh-runtime-diag.log')
+export function diag(line: string): void {
+  try {
+    appendFileSync(DIAG_PATH, `[${new Date().toISOString()}] ${line}\n`)
+  } catch {
+    /* 忽略诊断写入失败 */
+  }
+}
 
 export interface Runtime {
   node: string
@@ -22,13 +34,46 @@ function bundledNodeDir(): string {
     : join(app.getAppPath(), 'resources', 'node')
 }
 
+/** 探测内置 Node 是否真正可执行：文件存在 ≠ 能跑（安全软件可能拦截/文件损坏） */
+function nodeUsable(nodeExe: string): boolean {
+  try {
+    const r = spawnSync(nodeExe, ['--version'], { timeout: 8000, windowsHide: true })
+    const er = r.error as NodeJS.ErrnoException | undefined
+    diag(`nodeUsable: status=${r.status} signal=${r.signal} errno=${er?.errno} code=${er?.code} message=${er?.message ?? ''} stdout=${(r.stdout ?? Buffer.alloc(0)).toString().trim()}`)
+    return r.status === 0 && !!r.stdout?.toString().trim()
+  } catch (e) {
+    diag(`nodeUsable throw: ${e instanceof Error ? e.message : String(e)}`)
+    return false
+  }
+}
+
 export function resolveRuntime(): Runtime {
   const base = bundledNodeDir()
   const nodeExe = join(base, 'node.exe')
   const npmCli = join(base, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  diag(`resolveRuntime: isPackaged=${app.isPackaged} resourcesPath=${process.resourcesPath} arch=${process.arch} platform=${process.platform} execPath=${process.execPath}`)
+  diag(`resolveRuntime: nodeExe=${nodeExe} exists=${existsSync(nodeExe)}`)
   if (existsSync(nodeExe)) {
+    try {
+      const st = statSync(nodeExe)
+      diag(`resolveRuntime: nodeExe size=${st.size} isFile=${st.isFile()} mode=0${st.mode.toString(8)}`)
+    } catch (e) { diag(`resolveRuntime: stat nodeExe err=${e instanceof Error ? e.message : String(e)}`) }
+    try { diag(`resolveRuntime: nodeExe realpath=${realpathSync(nodeExe)}`) }
+    catch (e) { diag(`resolveRuntime: realpath nodeExe err=${e instanceof Error ? e.message : String(e)}`) }
+  }
+  diag(`resolveRuntime: npmCli=${npmCli} exists=${existsSync(npmCli)}`)
+  if (existsSync(nodeExe) && existsSync(npmCli) && nodeUsable(nodeExe)) {
+    pushLog(`使用内置 Node: ${nodeExe}`)
     return { node: nodeExe, npmCli, useShell: false, label: 'bundled' }
   }
+  if (!existsSync(nodeExe)) {
+    pushLog(`警告: 内置 Node 不存在: ${nodeExe}，尝试使用系统 Node。若持续失败，请检查安装包是否完整，或手动安装 Node v22。`)
+  } else if (!nodeUsable(nodeExe)) {
+    pushLog(`警告: 内置 Node 存在但无法执行（可能被安全软件拦截或文件损坏）: ${nodeExe}，尝试使用系统 Node。`)
+  } else {
+    pushLog(`警告: 内置 npm-cli 不存在: ${npmCli}，尝试使用系统 Node。`)
+  }
+  diag(`resolveRuntime: 回退到系统 Node`)
   return {
     node: process.platform === 'win32' ? 'node.exe' : 'node',
     npmCli: null,

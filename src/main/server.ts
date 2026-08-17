@@ -5,9 +5,9 @@
 //    Windows 访问 WSL 内 dsh 的唯一通道是 WSL2 localhost 转发（dsh 仅监听
 //    127.0.0.1，--host 0.0.0.0 被官方拒绝），因此绝不 terminate 发行版。
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import http from 'node:http'
-import { dshBin, resolveRuntime } from './dsh-manager'
+import { dshBin, diag, resolveRuntime } from './dsh-manager'
 import { dshHome, loadSettings, windowsApiKey } from './settings'
 import { pushLog } from './log'
 import {
@@ -18,6 +18,32 @@ import {
 
 let proc: ChildProcess | null = null
 let lastExit: { code: number | null; signal: string | null } | null = null
+
+/**
+ * 解析 dsh 工作目录（spawn 的 cwd）。
+ * 关键修复：若配置的工作目录不存在/不可进入，spawn 会以「spawn <node.exe> ENOENT」
+ * 的形式失败（Node 会把无效 cwd 的报错挂到可执行文件路径上），极具迷惑性。
+ * 故在此做存在性 + 目录校验，失败时回退到 USERPROFILE / 应用目录并告警。
+ */
+function resolveWorkspace(preferred: string | undefined): string {
+  const candidates = [preferred, process.env.USERPROFILE, process.cwd()].filter(Boolean) as string[]
+  for (const c of candidates) {
+    try {
+      if (existsSync(c) && statSync(c).isDirectory()) {
+        if (preferred && c !== preferred) {
+          pushLog(`警告: 工作目录 "${preferred}" 不存在或不可访问，已回退到 ${c}`)
+        }
+        return c
+      }
+    } catch {
+      /* 继续尝试下一个候选 */
+    }
+  }
+  const fallback = process.cwd()
+  diag(`resolveWorkspace: 全部候选无效，回退到 ${fallback}`)
+  pushLog(`警告: 工作目录 "${preferred}" 无效，已回退到 ${fallback}`)
+  return fallback
+}
 
 // ---- WSL 后端状态（进程句柄不可用，改用 pidfile + kill -0 实时判定 + 本地缓存） ----
 let wslRunning = false
@@ -238,16 +264,21 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
   if (!existsSync(dshBin())) throw new Error('dsh 尚未安装，请先在仪表盘中安装')
   const rt = resolveRuntime()
   const port = settings.port || 3080
-  const workspace = settings.workspace || process.env.USERPROFILE || process.cwd()
+  const workspace = resolveWorkspace(settings.workspace || process.env.USERPROFILE || process.cwd())
   const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: dshHome() }
   if (settings.apiKey) env.DEEPSEEK_API_KEY = settings.apiKey
 
   pushLog(`启动 dsh: ${dshBin()} --profile web --port ${port}`)
+  diag(`startServer: spawning node=${rt.node} label=${rt.label} dshBin=${dshBin()} cwd=${workspace} backend=${loadSettings().backend}`)
   proc = spawn(rt.node, [dshBin(), '--profile', 'web', '--port', String(port)], {
     cwd: workspace,
     env,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe']
+  })
+  proc.on('error', (e) => {
+    const err = e as NodeJS.ErrnoException
+    diag(`SPAWN ERROR: node=${rt.node} cwd=${workspace} code=${err.code} errno=${err.errno} syscall=${err.syscall} path=${err.path} message=${err.message}`)
   })
   lastExit = null
   proc.stdout?.on('data', (b) => pushLog(b.toString()))
