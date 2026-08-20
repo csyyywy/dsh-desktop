@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { AppStatus, InstallProgress } from '../../shared/types'
 import { useSettings } from './hooks'
+import { FALLBACK_BG } from './lib/theme'
 import WhaleMark from './WhaleMark'
-
-const FALLBACK_BG = 'radial-gradient(140% 140% at 10% -10%, #1b2547 0%, #0b1020 55%, #0a0d18 100%)'
 
 const PARTICLES = [
   { left: '12%', top: '28%', delay: '0s', size: 3 },
