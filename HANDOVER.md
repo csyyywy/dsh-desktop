@@ -69,6 +69,15 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 
 **v0.2.0（已发布 2026-08-16）**：**WSL 后端 + 文件桥**（见 §4.7/§4.8）。已在真实发行版（Ubuntu，默认用户，sudo 免密）完成 PoC 与部署冒烟：npm 装 dsh 走 npmmirror（1 分钟 532 包）、启动 → HTTP 200 → 进程组停止零残留。应用内自动换阿里 apt 源 + 装 build-essential（node-pty 编译必需）。**实测修复链**：①WSL 独立端口 `wslPort`（默认 3081）；②启动互斥 + 健康探测验证 dsh 响应；③文件桥盘符根 + localStorage 位置记忆；④「从本机同步插件与数据」→ WSL（配置层 + pnpm 重建，失败自动降级标准默认组合）；⑤`.credentials.yaml` 在 WSL 内致 dsh 启动卡死 → 启动前移走 + API Key env 注入；⑥降级 package.json 必须用 dsh 标准形态（`dsh-profile-web` + dsh-base/dsh-web-app bundles，空壳会卡死）；⑦主窗口 URL 动态随端口/后端重导航（openMain URL 比较 + reloadMain）；⑧WSL 启动后主窗口不弹（openMain 守卫适配 wslIsRunning）。
 
+**v0.2.3（未发布，代码审查驱动的修复批次）**：
+- **稳定性（主进程）**：spawn 失败后 `proc` 清理挂到 `close`（此前 `isRunning()` 永久卡 true，必须重启应用才恢复）；`waitForPort` 重写（settled 标志 + 总超时覆盖 verifyDsh 分支，防 WSL 启动被非 dsh 内容永久挂起）；`stopServer` 等待 taskkill 完成并轮询进程消失（restart 不再因旧进程占端口而 120s 超时）；WSL 启动探测失败时清理刚拉起的进程（`killByPidfile`）；stdout/stderr 流补 `error` 空监听（防 EPIPE 崩溃）；`startDsh` 永不 reject；`sendToWindows` 统一广播（webContents 销毁防护）；`resolveRuntime` 结果缓存 + 安装后失效（消除每次 getStatus 的同步 8s spawnSync）。
+- **网络层**：`latestVersion` / `searchNpm` 全部改走 `curlJson`（消灭残余 fetch，统一项目「一律走系统 curl」铁律）。
+- **插件安全**：`restoreBackup` 补备份名校验（与 `deleteBackup` 同规则，防路径穿越 + WSL 回退分支命令注入）；`backupProfile` WSL 回退先清理同名目标再拷内容（防嵌套成 `<ts>/web`）；插件写操作（install/uninstall/update/restore）互斥串行化；`restoreBackup` 原子恢复（staging 拷贝 + 交换 + 失败回滚，不再先删后拷）；`checkPluginUpdates` 并发限 3（防 GitHub 匿名限流）；占位包安装失败主动 `pnpm remove` 回滚；pnpm/npm 超时经 `onTimeout` 补发 pkill 清理发行版内残留进程（不再只杀 wsl.exe 客户端）。
+- **渲染层**：文件桥「上级目录」在单层深路径失效修复（`C:\Users` 回不到 `C:\`）；目录加载 / 插件搜索竞态防护（seq 丢弃过期响应）；IPC 错误统一处理（`errMsg` + `useAsyncAction`，IPC reject 不再永久卡 busy/loading）；日志面板贴底检测（上翻不被拽回底部）；settings 加载失败有限重试；BackendPanel 展示结构化失败（ok:false/error 字段）；消息配色改用 `ok` 字段（不再猜中文前缀）；WhaleMark 改 CSS 覆盖（去掉脆弱字符串替换）；ErrorBoundary + `unhandledrejection` 兜底；移除伪功能的「深色主题」开关（UI 硬编码深色）。
+- **会话迁移**：补建工作区目录改走 UNC（此前 `mkdirSync(workspace)` 用 Linux 路径在 Windows 盘根建出 `C:\home\...` 垃圾）；日志统一走 `pushLog`。
+- **架构**：`index.ts`（1015 行）拆出 `wsl-backend.ts`（部署/同步/降级/诊断，`BackendSetupDeps` 依赖注入、无循环引用），index 降至 ~700 行；渲染层抽取 `ui/` 基元与 `lib/format`（三面板去重）。
+- **settings.ts**：逐字段类型校验（port/backend 等非法值不再原样穿透）+ 损坏文件备份 `.corrupt-<ts>`。
+
 ---
 
 ## 3. 本机环境（接手者必须知道）
