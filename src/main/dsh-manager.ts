@@ -2,7 +2,7 @@
 // 只通过 npm 安装官方 @deepseek-ai/dsh，绝不改其源码。
 import { app } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { dataDir, loadSettings } from './settings'
@@ -205,22 +205,118 @@ export function runNpm(args: string[], onLine?: (line: string) => void): Promise
     }
     child.stdout?.on('data', emit)
     child.stderr?.on('data', emit)
+    child.stdout?.on('error', () => { /* ignore */ })
+    child.stderr?.on('error', () => { /* ignore */ })
     child.on('error', reject)
     child.on('close', (code) => resolve(code ?? 0))
   })
 }
 
-/** 安装/升级/回滚 dsh 到指定版本（'latest' 或具体 semver） */
-export function installDsh(version: string, onLine?: (line: string) => void): Promise<number> {
+/** 内置 pnpm 可执行路径（构建期下载，纯 JS） */
+export function pnpmCjsPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'pnpm', 'bin', 'pnpm.cjs')
+    : join(app.getAppPath(), 'resources', 'pnpm', 'bin', 'pnpm.cjs')
+}
+
+/**
+ * 运行内置 pnpm 安装到 dataDir（dsh 本体安装/更新/回滚，v0.2.3 提速改造）：
+ * - --config.node-linker=hoisted：扁平 node_modules（isolated 的 symlink 会被
+ *   restoreBundledDsh / 运行时扫描破坏）；
+ * - --ignore-scripts：dsh 依赖树原生模块均自带预编译（koffi@koromix / node-pty
+ *   prebuilds），跳过构建脚本既提速又规避 pnpm 11 构建审批与脚本联网挂起；
+ * - --store-dir dataDir/pnpm-store：持久 store，后续更新只拉增量（秒级）。
+ */
+export function runPnpmCore(args: string[], onLine?: (line: string) => void): Promise<{ code: number; output: string }> {
+  return new Promise((resolve) => {
+    const rt = resolveRuntime()
+    const pnpm = pnpmCjsPath()
+    const fullArgs = [
+      '--dir', dataDir(),
+      '--config.node-linker=hoisted',
+      '--ignore-scripts',
+      '--store-dir', join(dataDir(), 'pnpm-store'),
+      ...args
+    ]
+    pushLog(`$ pnpm ${args.join(' ')}`)
+    const child = spawn(rt.node, [pnpm, ...fullArgs], { cwd: dataDir(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    const emit = (buf: Buffer): void => {
+      const t = buf.toString()
+      out += t
+      for (const l of t.split(/\r?\n/)) {
+        if (l.trim()) {
+          pushLog(l)
+          onLine?.(l)
+        }
+      }
+    }
+    child.stdout?.on('data', emit)
+    child.stderr?.on('data', emit)
+    child.stdout?.on('error', () => { /* ignore */ })
+    child.stderr?.on('error', () => { /* ignore */ })
+    child.on('error', (e) => resolve({ code: 1, output: e.message }))
+    child.on('close', (code) => resolve({ code: code ?? 1, output: out }))
+  })
+}
+
+/** 安装后校验（与 bundle-dsh 一致）：原生模块可加载 + dsh 可运行。
+ *  cwd=dataDir 使 require 从 dataDir/node_modules 解析。 */
+function verifyDshInstall(): boolean {
+  try {
+    const rt = resolveRuntime()
+    const bin = dshBin()
+    if (!existsSync(bin)) return false
+    const native = spawnSync(rt.node, ['-e', "try{require('koffi');require('node-pty');process.stdout.write('ok')}catch(e){process.exit(1)}"], {
+      cwd: dataDir(), timeout: 20000, windowsHide: true, encoding: 'utf8'
+    })
+    if (native.status !== 0 || (native.stdout || '').trim() !== 'ok') {
+      pushLog('dsh 原生模块校验失败（koffi/node-pty 未就绪）')
+      return false
+    }
+    const ver = spawnSync(rt.node, [bin, '--version'], { timeout: 20000, windowsHide: true, encoding: 'utf8' })
+    const v = (ver.stdout || '').trim()
+    if (ver.status !== 0 || !v) {
+      pushLog('dsh 可执行校验失败（dsh --version 无输出）')
+      return false
+    }
+    pushLog('dsh 安装校验通过: v' + v)
+    return true
+  } catch (e) {
+    pushLog('dsh 安装校验异常: ' + (e as Error).message)
+    return false
+  }
+}
+
+/** 安装/升级/回滚 dsh 到指定版本（'latest' 或具体 semver）——pnpm 主路径 + npm 回退 */
+export async function installDsh(version: string, onLine?: (line: string) => void): Promise<number> {
   const target = version === 'latest' ? '@deepseek-ai/dsh@latest' : `@deepseek-ai/dsh@${version}`
-  const args = ['install', '--prefix', dataDir(), '--no-audit', '--no-fund']
   const registry = loadSettings().npmRegistry
+  // pnpm add 需要 dataDir/package.json
+  mkdirSync(dataDir(), { recursive: true })
+  const pkgPath = join(dataDir(), 'package.json')
+  if (!existsSync(pkgPath)) {
+    writeFileSync(pkgPath, JSON.stringify({ name: 'dsh-runtime', private: true, version: '0.0.0' }, null, 2) + '\n', 'utf8')
+  }
+  const pnpmArgs = ['add', target]
+  if (registry) pnpmArgs.push('--registry', registry)
+  const pr = await runPnpmCore(pnpmArgs, onLine)
+  if (pr.code === 0) {
+    if (verifyDshInstall()) {
+      invalidateRuntimeCache()
+      return 0
+    }
+    pushLog('dsh pnpm 安装校验失败（原生模块缺失），回退 npm')
+  } else {
+    pushLog('dsh pnpm 安装失败 (exit ' + pr.code + ')，回退 npm：' + pr.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' '))
+  }
+  // 回退：npm install（npm 会执行构建脚本，可补齐 pnpm 缺失的预编译）
+  const args = ['install', '--prefix', dataDir(), '--no-audit', '--no-fund']
   if (registry) args.push('--registry', registry)
   args.push(target)
-  return runNpm(args, onLine).then((code) => {
-    if (code === 0) invalidateRuntimeCache()
-    return code
-  })
+  const code = await runNpm(args, onLine)
+  if (code === 0) invalidateRuntimeCache()
+  return code
 }
 
 // ---------- WSL 分支（v0.2.0） ----------
@@ -267,9 +363,39 @@ export function wslInstalledVersion(): string | null {
   }
 }
 
+/** WSL 内安装后校验：原生模块可加载 + dsh 可运行（与本地 verifyDshInstall 对应） */
+async function verifyWslDsh(distro: string, node: string, base: string): Promise<boolean> {
+  try {
+    // cd base 使 node -e 的 require 从 base/node_modules 解析
+    const native = await runWslBash(
+      `cd ${bashQuote(base)} && ${bashQuote(node)} -e "try{require('koffi');require('node-pty');process.stdout.write('ok')}catch(e){process.exit(1)}"`,
+      { silent: true, distro, timeoutMs: 30000 }
+    )
+    if (native.code !== 0 || !native.stdout.includes('ok')) {
+      pushLog('WSL dsh 原生模块校验失败（koffi/node-pty 未就绪）')
+      return false
+    }
+    const ver = await runWslBash(
+      `${bashQuote(node)} ${bashQuote(`${base}/node_modules/@deepseek-ai/dsh/lib/bin.js`)} --version`,
+      { silent: true, distro, timeoutMs: 30000 }
+    )
+    const v = ver.stdout.trim()
+    if (ver.code !== 0 || !v) {
+      pushLog('WSL dsh 可执行校验失败（dsh --version 无输出）')
+      return false
+    }
+    pushLog('WSL dsh 校验通过: v' + v)
+    return true
+  } catch (e) {
+    pushLog('WSL dsh 校验异常: ' + (e as Error).message)
+    return false
+  }
+}
+
 /**
- * WSL 内安装/升级/回滚 dsh（发行版内 Linux Node 跑 npm-cli）。
- * 注意：必须走发行版内 npm（win32 的内置 bundle/sharp 二进制不通用）。
+ * WSL 内安装/升级/回滚 dsh（发行版内 Linux Node 跑 pnpm，与本地同一方案：
+ * hoisted 扁平布局 + 忽略构建脚本 + 持久 store；失败回退 npm）。
+ * 注意：必须走发行版内安装（win32 的内置 bundle/sharp 二进制不通用）。
  * opts 用于部署流程（此时 settings.backend/wslHome 尚未切换），
  * 常规运行（backend 已切到 wsl）可省略。
  */
@@ -282,44 +408,70 @@ export function installDshWsl(
   const base = (opts.home ? `${opts.home}/.dsh-desktop` : null) ?? wslBaseLinux()
   const node = base ? `${base}/node/bin/node` : null
   const npmCli = base ? `${base}/node/lib/node_modules/npm/bin/npm-cli.js` : null
-  if (!distro || !node || !npmCli || !base) {
-    pushLog('WSL 后端未部署（缺少 node/npm），无法安装 dsh')
+  const pnpm = base ? `${base}/pnpm/bin/pnpm.cjs` : null
+  if (!distro || !node || !npmCli || !pnpm || !base) {
+    pushLog('WSL 后端未部署（缺少 node/npm/pnpm），无法安装 dsh')
     return Promise.resolve(1)
   }
   const target = version === 'latest' ? '@deepseek-ai/dsh@latest' : `@deepseek-ai/dsh@${version}`
-  const args = [node, npmCli, 'install', '--prefix', base, '--no-audit', '--no-fund']
   const registry = loadSettings().npmRegistry
-  if (registry) args.push('--registry', registry)
-  args.push(target)
-  pushLog(`$ wsl npm install ${target}`)
-  // export PATH：npm 的 postinstall 脚本（koffi/node-pty 等）用 `sh -c node`，
-  // 发行版 PATH 必须包含我们的 Linux Node（冒烟实测：缺了会 node: not found）
-  const script = `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${args.map(bashQuote).join(' ')}`
-  return runWslBash(script, {
+  const extra = registry ? ['--registry', registry] : []
+  // export PATH：生命周期脚本用 `sh -c node`，PATH 必须包含我们的 Linux Node
+  const pathPrefix = `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; `
+  // pnpm add 需要 base/package.json（经 UNC 写入，避免外层 shell 剥引号）
+  const pkgPath = toUnc(distro, `${base}/package.json`)
+  try {
+    mkdirSync(toUnc(distro, base), { recursive: true })
+    if (!existsSync(pkgPath)) {
+      writeFileSync(pkgPath, JSON.stringify({ name: 'dsh-runtime', private: true, version: '0.0.0' }, null, 2) + '\n', 'utf8')
+    }
+  } catch (e) {
+    pushLog('WSL 写入 package.json 失败: ' + (e as Error).message)
+  }
+
+  // 主路径：发行版内 pnpm（hoisted + 忽略构建脚本 + 持久 store）
+  const pnpmArgs = [
+    node, pnpm, 'add', target, '--dir', base,
+    '--config.node-linker=hoisted', '--ignore-scripts',
+    '--store-dir', `${base}/.pnpm-store`, ...extra
+  ]
+  pushLog(`$ wsl pnpm add ${target}`)
+  return runWslBash(pathPrefix + pnpmArgs.map(bashQuote).join(' '), {
     timeoutMs: 10 * 60 * 1000,
     onLine,
     distro,
-    // 1.5：超时只杀 wsl.exe 客户端，发行版内 npm 继续跑会占锁；按 node 路径精确清理
     onTimeout: () => {
-      pushLog('WSL npm install 超时，尝试终止发行版内的 npm 进程')
+      pushLog('WSL pnpm 安装超时，尝试终止发行版内的 node 进程')
       void runWslBash(`pkill -u $(id -un) -f ${bashQuote(node)} 2>/dev/null`, { silent: true, distro })
     }
   }).then(async (r) => {
-    if (r.code !== 0) return r.code
+    let ok = r.code === 0
+    if (!ok) {
+      pushLog('WSL pnpm 安装失败，回退 npm: ' + (r.stderr || r.stdout).trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' '))
+    }
+    // 校验；失败也回退 npm（npm 会执行构建脚本补齐预编译）
+    if (ok && !(await verifyWslDsh(distro, node, base))) {
+      pushLog('WSL dsh pnpm 安装校验失败（原生模块缺失），回退 npm')
+      ok = false
+    }
+    if (!ok) {
+      const npmArgs = [node, npmCli, 'install', '--prefix', base, '--no-audit', '--no-fund', ...extra, target]
+      const nr = await runWslBash(pathPrefix + npmArgs.map(bashQuote).join(' '), { timeoutMs: 10 * 60 * 1000, onLine, distro })
+      if (nr.code !== 0) return nr.code
+      if (!(await verifyWslDsh(distro, node, base))) return 1
+    }
     // v0.2.1 兼容性修复：全局安装 + PATH 固化，保证 WSL 终端可直接敲 `dsh`。
     // 应用内部用 --prefix 布局（绝对路径调用），全局布局（<base>/node/bin/dsh）
     // 供用户终端/harness 使用——两者版本一致、互不干扰。best-effort：失败只记
     // 日志，不影响应用内置 dsh 的可用性。
-    const gargs = [node, npmCli, 'install', '-g', '--no-audit', '--no-fund']
-    if (registry) gargs.push('--registry', registry)
-    gargs.push(target)
+    const gargs = [node, npmCli, 'install', '-g', '--no-audit', '--no-fund', ...extra, target]
     // PATH 固化（幂等）：发行版用户 .bashrc/.profile 追加 node/bin。
     // grep 用子串 `dsh-desktop/node/bin` 匹配——兼容既有 `$HOME` 变量形式与
     // 绝对路径形式，避免重复追加；echo 单引号内容保持字面 $PATH，由 bashrc 加载时展开。
     const bashrcLine = `grep -qF 'dsh-desktop/node/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="${base}/node/bin:$PATH"' >> "$HOME/.bashrc"`
     const profileLine = `grep -qF 'dsh-desktop/node/bin' "$HOME/.profile" 2>/dev/null || echo 'export PATH="${base}/node/bin:$PATH"' >> "$HOME/.profile"`
     const gscript = [
-      `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${gargs.map(bashQuote).join(' ')}`,
+      pathPrefix + gargs.map(bashQuote).join(' '),
       bashrcLine,
       profileLine
     ].join('; ')
@@ -329,6 +481,6 @@ export function installDshWsl(
     } else {
       pushLog('WSL 全局 dsh 已就绪，终端可直接使用 `dsh`（PATH 已固化到 .bashrc/.profile）')
     }
-    return r.code
+    return 0
   })
 }
