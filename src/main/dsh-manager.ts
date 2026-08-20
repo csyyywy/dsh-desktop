@@ -47,7 +47,17 @@ function nodeUsable(nodeExe: string): boolean {
   }
 }
 
+// Q3：resolveRuntime 结果缓存。buildStatus/getStatus 每次调用都会走到 nodeUsable
+// （同步 spawnSync，最坏 8s），若内置 node 被安全软件拦截会冻结主进程。
+// 内置 node 位置构建期固化、进程生命周期内不变，缓存安全；安装/更新后显式失效。
+let runtimeCache: Runtime | null = null
+
+export function invalidateRuntimeCache(): void {
+  runtimeCache = null
+}
+
 export function resolveRuntime(): Runtime {
+  if (runtimeCache) return runtimeCache
   const base = bundledNodeDir()
   const nodeExe = join(base, 'node.exe')
   const npmCli = join(base, 'node_modules', 'npm', 'bin', 'npm-cli.js')
@@ -64,7 +74,8 @@ export function resolveRuntime(): Runtime {
   diag(`resolveRuntime: npmCli=${npmCli} exists=${existsSync(npmCli)}`)
   if (existsSync(nodeExe) && existsSync(npmCli) && nodeUsable(nodeExe)) {
     pushLog(`使用内置 Node: ${nodeExe}`)
-    return { node: nodeExe, npmCli, useShell: false, label: 'bundled' }
+    runtimeCache = { node: nodeExe, npmCli, useShell: false, label: 'bundled' }
+    return runtimeCache
   }
   if (!existsSync(nodeExe)) {
     pushLog(`警告: 内置 Node 不存在: ${nodeExe}，尝试使用系统 Node。若持续失败，请检查安装包是否完整，或手动安装 Node v22。`)
@@ -74,12 +85,13 @@ export function resolveRuntime(): Runtime {
     pushLog(`警告: 内置 npm-cli 不存在: ${npmCli}，尝试使用系统 Node。`)
   }
   diag(`resolveRuntime: 回退到系统 Node`)
-  return {
+  runtimeCache = {
     node: process.platform === 'win32' ? 'node.exe' : 'node',
     npmCli: null,
     useShell: process.platform === 'win32',
     label: 'system'
   }
+  return runtimeCache
 }
 
 export function dshBin(): string {
@@ -151,18 +163,11 @@ export function installedVersion(): string | null {
 
 export async function latestVersion(): Promise<string | null> {
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 5000)
-    try {
-      const res = await fetch('https://registry.npmjs.org/@deepseek-ai/dsh/latest', {
-        signal: controller.signal
-      })
-      if (!res.ok) return null
-      const j = (await res.json()) as { version?: string }
-      return j.version ?? null
-    } finally {
-      clearTimeout(timer)
-    }
+    // 与 listVersions 一致走 curlJson（系统 curl / 系统证书库）：Node fetch/https
+    // 在自定义 CA 代理下会 TLS 校验失败（见 net.ts 头部说明），不能用于外部请求。
+    const registry = (loadSettings().npmRegistry?.trim() || 'https://registry.npmjs.org').replace(/\/+$/, '')
+    const j = (await curlJson(`${registry}/@deepseek-ai/dsh/latest`, {}, 10)) as { version?: string }
+    return j.version ?? null
   } catch {
     return null
   }
@@ -212,7 +217,10 @@ export function installDsh(version: string, onLine?: (line: string) => void): Pr
   const registry = loadSettings().npmRegistry
   if (registry) args.push('--registry', registry)
   args.push(target)
-  return runNpm(args, onLine)
+  return runNpm(args, onLine).then((code) => {
+    if (code === 0) invalidateRuntimeCache()
+    return code
+  })
 }
 
 // ---------- WSL 分支（v0.2.0） ----------

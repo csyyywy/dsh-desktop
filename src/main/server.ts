@@ -88,42 +88,59 @@ async function wslAliveCheck(): Promise<boolean> {
 function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean | Promise<boolean> = isRunning, verifyDsh = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now()
+    // settled 标志：resolve/reject 后丢弃所有已排队的 tick，杜绝请求/timer 泄漏（Q4）
+    let settled = false
+    const finish = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      fn()
+    }
+    const fail = (msg: string): void => finish(() => reject(new Error(msg)))
     const tick = (): void => {
+      if (settled) return
+      // 总超时统一在每轮入口判断（含 verifyDsh 分支，防非 dsh 内容永久挂起 —— B3）
+      if (Date.now() - start > timeoutMs) {
+        fail('等待 dsh 服务启动超时')
+        return
+      }
       void (async () => {
+        if (settled) return
         if (!(await alive())) {
-          reject(new Error('dsh 进程已退出，详见日志'))
+          fail('dsh 进程已退出，详见日志')
           return
         }
         const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2500 }, (res) => {
-          if (!verifyDsh) {
+          if (settled) {
             res.resume()
-            resolve()
             return
           }
-          // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）
+          if (!verifyDsh) {
+            res.resume()
+            finish(() => resolve())
+            return
+          }
+          // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）。
+          // 内容一旦命中标记立即成功；读完仍不匹配则重试；超 64KB 截断按超时路径兜底。
           let body = ''
           res.on('data', (b: Buffer) => {
+            if (settled) return
             body += b.toString()
+            if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) {
+              finish(() => resolve())
+              res.destroy()
+              return
+            }
             if (body.length > 65536) req.destroy()
           })
           res.on('end', () => {
-            if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) resolve()
-            else setTimeout(tick, 500)
+            if (settled) return
+            setTimeout(tick, 500)
           })
         })
         req.on('timeout', () => req.destroy())
         req.on('error', () => {
-          void (async () => {
-            if (!(await alive())) {
-              reject(new Error('dsh 进程已退出，详见日志'))
-              return
-            }
-            if (Date.now() - start > timeoutMs) {
-              reject(new Error('等待 dsh 服务启动超时'))
-              return
-            }
-            setTimeout(tick, 500)
-          })()
+          if (settled) return
+          setTimeout(tick, 500)
         })
       })()
     }
@@ -146,6 +163,16 @@ async function preflightWsl(port: number): Promise<string | null> {
     return `检测到 .wslconfig 关闭了 localhost 转发（WSL 后端唯一访问通道）。请将 ${lf.configPath} 中的 localhostForwarding 改为 true 或删除该行`
   }
   return null
+}
+
+/** 按 pidfile（<pid> <pgid>）杀 WSL 内 dsh 进程：优先进程组，再单 pid 兜底 */
+async function killByPidfile(pidfile: string): Promise<void> {
+  const info = await readPidfile(pidfile)
+  if (info.pid == null) return
+  const cmds: string[] = []
+  if (info.pgid != null) cmds.push(`kill -- -${info.pgid} 2>/dev/null`)
+  cmds.push(`kill ${info.pid} 2>/dev/null`)
+  await runWslBash(cmds.join('; '), { silent: true })
 }
 
 async function startWslServer(): Promise<void> {
@@ -207,6 +234,10 @@ async function startWslServer(): Promise<void> {
   } catch (e) {
     wslRunning = false
     wslPidCache = null
+    // B6：启动失败要清理刚拉起的 dsh 进程——否则孤儿进程占端口 + pidfile 残留，
+    // 下次启动 preflight 报「端口已被占用」死锁，只能手动强制清理
+    pushLog('WSL dsh 启动探测失败，清理刚启动的进程')
+    await killByPidfile(pidfile)
     throw e
   }
 }
@@ -217,10 +248,7 @@ async function stopWslServer(): Promise<void> {
   const info = await readPidfile(pidfile)
   if (info.pid != null) {
     // 优先按进程组杀（setsid 新会话组），再杀单进程兜底
-    const cmds: string[] = []
-    if (info.pgid != null) cmds.push(`kill -- -${info.pgid} 2>/dev/null`)
-    cmds.push(`kill ${info.pid} 2>/dev/null`)
-    await runWslBash(cmds.join('; '), { silent: true })
+    await killByPidfile(pidfile)
     for (let i = 0; i < 10; i++) {
       if (!(await pidAlive(info.pid))) break
       await sleep(500)
@@ -276,21 +304,45 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe']
   })
+  // 关键坑（B1）：Node 在 spawn 失败时只发 'error'（随后必发 'close'，但不发 'exit'）。
+  // 若只把 proc 清理写在 'exit' 上，spawn 失败后 proc 永不置空 → isRunning() 永久为 true。
+  // 统一用 settle()（幂等）：'error' 立即清理 + 回调 onExit(-1)，'close' 兜底一次。
+  let procSettled = false
+  const settle = (code: number | null): void => {
+    if (procSettled) return
+    procSettled = true
+    const p = proc
+    proc = null
+    if (p) onExit?.(code)
+  }
   proc.on('error', (e) => {
     const err = e as NodeJS.ErrnoException
     diag(`SPAWN ERROR: node=${rt.node} cwd=${workspace} code=${err.code} errno=${err.errno} syscall=${err.syscall} path=${err.path} message=${err.message}`)
+    pushLog(`dsh 进程启动失败: ${err.message}（code=${err.code ?? '?'}）`)
+    settle(-1)
   })
   lastExit = null
   proc.stdout?.on('data', (b) => pushLog(b.toString()))
   proc.stderr?.on('data', (b) => pushLog(b.toString()))
+  // 管道中断（EPIPE/ECONNRESET，如被 taskkill 强杀）若无监听会抛 uncaughtException；忽略即可，判定靠 close
+  proc.stdout?.on('error', () => { /* ignore stream error */ })
+  proc.stderr?.on('error', () => { /* ignore stream error */ })
   proc.on('exit', (code, signal) => {
     lastExit = { code, signal: signal ?? null }
     pushLog(`dsh 进程退出 (code=${code} signal=${signal})`)
-    const p = proc
-    proc = null
-    if (p) onExit?.(code)
   })
+  proc.on('close', (code) => settle(code))
   await waitForPort(port)
+}
+
+/** Windows 进程存活检测：signal 0 = 仅查存在性；EPERM 表示存在但无权信号（也算活着） */
+function pidAliveWin(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 export async function stopServer(): Promise<void> {
@@ -302,15 +354,24 @@ export async function stopServer(): Promise<void> {
   proc = null
   if (!p) return
   if (process.platform === 'win32' && p.pid) {
-    try {
-      spawn('taskkill', ['/pid', String(p.pid), '/T', '/F'], { windowsHide: true })
-    } catch {
-      p.kill('SIGKILL')
+    // taskkill 必须等待完成 + 轮询进程消失（B4）：restart = stop 后立即 start，
+    // 若旧进程未退出仍占端口，新进程 bind 失败 → 长时间超时；固定 700ms 睡不可靠。
+    await new Promise<void>((resolve) => {
+      const child = spawn('taskkill', ['/pid', String(p.pid), '/T', '/F'], { windowsHide: true })
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
+    })
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && pidAliveWin(p.pid)) {
+      await sleep(150)
+    }
+    if (pidAliveWin(p.pid)) {
+      pushLog(`stopServer: 进程 ${p.pid} 未在 5s 内退出，尝试 SIGKILL`)
+      try { p.kill('SIGKILL') } catch { /* ignore */ }
     }
   } else {
     p.kill('SIGTERM')
   }
-  await new Promise((r) => setTimeout(r, 700))
 }
 
 export async function restartServer(onExit?: (code: number | null) => void): Promise<void> {

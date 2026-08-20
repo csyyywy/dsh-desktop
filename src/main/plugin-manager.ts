@@ -163,16 +163,20 @@ async function backupProfile(): Promise<void> {
   if (!existsSync(join(dir, 'package.json'))) return
   const name = timestamp()
   const dest = join(backupsDir(), name)
-  mkdirSync(dest, { recursive: true })
+  const linuxDir = profileLinuxDir()
+  const linuxDest = backupsLinuxDir()
   try {
+    mkdirSync(dest, { recursive: true })
     cpSync(dir, dest, { recursive: true })
   } catch (e) {
     pushLog('备份 profile（UNC）失败: ' + (e as Error).message)
-    const linuxDir = profileLinuxDir()
-    const linuxDest = backupsLinuxDir()
     if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
-      // 回退：发行版内直接 cp
-      const res = await runWslBash(`mkdir -p ${linuxDest} && cp -r ${linuxDir} ${linuxDest}/${name}`, { silent: true })
+      // 回退：发行版内直接 cp。先清理同名目标（避免 cp -r 嵌套成 <ts>/web），
+      // 再拷内容（${linuxDir}/. → ${linuxDest}/${name}/）。路径统一 bashQuote。
+      const res = await runWslBash(
+        `rm -rf ${bashQuote(`${linuxDest}/${name}`)} && mkdir -p ${bashQuote(`${linuxDest}/${name}`)} && cp -r ${bashQuote(`${linuxDir}/.`)} ${bashQuote(`${linuxDest}/${name}/`)}`,
+        { silent: true }
+      )
       if (res.code !== 0) pushLog('备份 profile（wsl cp）失败: ' + (res.stderr || res.stdout).trim())
     } else {
       pushLog('备份 profile 失败: ' + (e as Error).message)
@@ -204,6 +208,9 @@ export function deleteBackup(name: string): PluginOpResult {
 }
 
 export async function restoreBackup(name: string): Promise<PluginOpResult> {
+  // 安全校验（与 deleteBackup 同规则）：备份名必须是时间戳格式，
+  // 否则 join() 可路径穿越、WSL 回退分支存在命令注入面（高危，必校验）
+  if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
   const src = join(backupsDir(), name)
   const dir = profileDir()
   if (!existsSync(src)) return { ok: false, message: '备份不存在' }
@@ -212,11 +219,11 @@ export async function restoreBackup(name: string): Promise<PluginOpResult> {
     mkdirSync(dir, { recursive: true })
     cpSync(src, dir, { recursive: true })
   } catch (e) {
-    // UNC 失败回退发行版内操作
+    // UNC 失败回退发行版内操作（路径统一 bashQuote，防特殊字符破坏/注入）
     const linuxDir = profileLinuxDir()
     const linuxSrc = backupsLinuxDir()
     if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
-      const res = await runWslBash(`rm -rf ${linuxDir} && mkdir -p ${linuxDir} && cp -r ${linuxSrc}/${name} ${linuxDir}`, { silent: true })
+      const res = await runWslBash(`rm -rf ${bashQuote(linuxDir)} && mkdir -p ${bashQuote(linuxDir)} && cp -r ${bashQuote(`${linuxSrc}/${name}`)} ${bashQuote(linuxDir)}`, { silent: true })
       return res.code === 0
         ? { ok: true, message: `已回退到 ${name}` }
         : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }
@@ -485,9 +492,8 @@ async function searchNpm(query: string): Promise<PluginInfo[]> {
   const text = q ? `keywords:dsh-plugin ${q}` : 'keywords:dsh-plugin'
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=40`
   try {
-    const res = await fetch(url)
-    if (!res.ok) return []
-    const j = (await res.json()) as { objects?: Array<{ package: Record<string, unknown> }> }
+    // 走 curlJson（系统 curl），与项目约束一致：Node fetch 在自定义 CA 代理下会 TLS 校验失败
+    const j = (await curlJson(url)) as { objects?: Array<{ package: Record<string, unknown> }> }
     return (j.objects ?? []).map((o) => {
       const p = o.package as {
         name?: string

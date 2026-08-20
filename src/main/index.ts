@@ -156,7 +156,8 @@ function openMain(): void {
   // WSL 模式没有本机 proc 句柄，isRunning() 恒 false——必须同时看 wslIsRunning()，
   // 否则启动成功后这里会误判"未运行"而递归 startDsh（被互斥锁挡住）→ 主窗口不弹出
   if (!isRunning() && !wslIsRunning()) {
-    void startDsh()
+    // B5：startDsh 已保证不 reject；再加 .catch 兜底防未来改动
+    void startDsh().catch((e) => pushLog(`openMain: 启动失败 ${(e as Error).message}`))
     return
   }
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -190,6 +191,19 @@ function notifyWindows(): BrowserWindow[] {
   return list
 }
 
+/** 统一广播：窗口 close→closed 之间 webContents 可能已销毁，send 会抛异常（B9）。
+ *  集中做 isDestroyed 检查 + try/catch，替代 5 处散落的裸 send。 */
+function sendToWindows(channel: string, payload: unknown): void {
+  for (const w of notifyWindows()) {
+    try {
+      if (w.webContents.isDestroyed()) continue
+      w.webContents.send(channel, payload)
+    } catch {
+      /* 窗口销毁竞态，忽略 */
+    }
+  }
+}
+
 /** 当前后端生效的 dsh 端口（WSL 独立端口，与 Windows 侧隔离） */
 function webPort(): number {
   const s = loadSettings()
@@ -220,25 +234,24 @@ function buildStatus(): AppStatus {
 }
 
 function broadcastStatus(): void {
-  const s = buildStatus()
-  for (const w of notifyWindows()) w.webContents.send('status:changed', s)
+  sendToWindows('status:changed', buildStatus())
   if (tray) refreshTrayMenu({ controller, openMain, openDashboard: showDashboard })
 }
 
 function broadcastProgress(p: InstallProgress): void {
-  for (const w of notifyWindows()) w.webContents.send('install:progress', p)
+  sendToWindows('install:progress', p)
 }
 
 function broadcastAppUpdateProgress(p: AppUpdateProgress): void {
-  for (const w of notifyWindows()) w.webContents.send('app:updateProgress', p)
+  sendToWindows('app:updateProgress', p)
 }
 
 function broadcastBackendSetupProgress(p: BackendSetupProgress): void {
-  for (const w of notifyWindows()) w.webContents.send('backend:setupProgress', p)
+  sendToWindows('backend:setupProgress', p)
 }
 
 function broadcastFsbProgress(p: FsTransferProgress): void {
-  for (const w of notifyWindows()) w.webContents.send('fsb:progress', p)
+  sendToWindows('fsb:progress', p)
 }
 
 // ---------- 服务 / 安装编排 ----------
@@ -307,12 +320,14 @@ async function startDsh(): Promise<AppStatus> {
   if (isRunning() || wslIsRunning()) return buildStatus()
   starting = true
   try {
-    await ensureInstalled()
     phase = 'starting'
     error = null
     broadcastStatus()
     broadcastProgress({ phase: 'starting', message: '正在启动服务…' })
     try {
+      // B5：ensureInstalled 纳入 try —— 安装失败时走统一 phase='error'，
+      // 不再向外 throw，避免 openMain/托盘等 `void startDsh()` 出现未处理拒绝
+      await ensureInstalled()
       await startServer(onServerExit)
       phase = 'running'
       error = null
@@ -976,9 +991,7 @@ if (!gotLock) {
 
   void app.whenReady().then(() => {
     registerIpc(controller)
-    onLog((line) => {
-      for (const w of notifyWindows()) w.webContents.send('log:line', line)
-    })
+    onLog((line) => sendToWindows('log:line', line))
 
     splashWindow = createSplash()
     try {

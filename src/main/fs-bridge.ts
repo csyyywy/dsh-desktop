@@ -131,6 +131,9 @@ function pump(): void {
     running.set(item.job.id, item)
     void runJob(item).finally(() => {
       running.delete(item.job.id)
+      // 清理状态：cancelled / jobStarts 只增不减会无界增长（泄漏）
+      cancelled.delete(item.job.id)
+      jobStarts.delete(item.job.id)
       pump()
     })
   }
@@ -157,7 +160,15 @@ async function runJob(item: { job: FsTransferRequest; emit: Emit }): Promise<voi
   try {
     // 同侧：原子 rename；跨侧（或 EXDEV 回退）走流式复制 + 删源
     if (job.srcSide === job.dstSide) {
+      // 与复制路径语义一致：目标已存在且未勾选覆盖 → 明确报错
+      if (existsSync(dstFile) && !job.overwrite) {
+        progressOf(job, emit, { phase: 'error', message: '目标已存在同名文件（可勾选覆盖）' })
+        return
+      }
       try {
+        if (existsSync(dstFile)) {
+          try { rmSync(dstFile, { force: true, recursive: true }) } catch { /* 覆盖前尽力清理，忽略失败 */ }
+        }
         renameSync(srcWin, dstFile)
         progressOf(job, emit, { phase: 'done', done: total, total })
         pushLog(`文件桥：移动 ${job.srcSide} ${job.srcPath} → ${job.dstPath}`)
