@@ -104,6 +104,8 @@ export interface AppUpdateInfo {
   assetUrl: string | null
   /** 安装包大小（字节） */
   assetSize: number | null
+  /** 安装包 SHA256 摘要（GitHub API digest 字段，格式 "sha256:<hex>"，可能缺失） */
+  assetDigest?: string | null
 }
 
 /** 应用自更新（下载安装包）的结果 */

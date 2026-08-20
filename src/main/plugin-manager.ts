@@ -568,8 +568,11 @@ async function searchNpm(query: string): Promise<PluginInfo[]> {
 }
 
 export async function searchPlugins(query: string, sort: string = 'stars', source: string = 'github'): Promise<PluginInfo[]> {
-  if (source === 'npm') return searchNpm(query)
-  return searchGithub(query, sort)
+  // Q6：IPC 直传的 sort/source 白名单校验，非法值回默认，防恶意参数
+  const safeSource = source === 'npm' ? 'npm' : 'github'
+  const safeSort = sort === 'updated' ? 'updated' : 'stars'
+  if (safeSource === 'npm') return searchNpm(query)
+  return searchGithub(query, safeSort)
 }
 
 function findNpmNameByRepo(repo: string): string | null {

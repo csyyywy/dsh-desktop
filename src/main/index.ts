@@ -314,6 +314,16 @@ async function ensureInstalled(): Promise<void> {
 // 多个 dsh 进程抢端口、状态在 starting/error 间横跳（用户实测问题）
 let starting = false
 
+// 生命周期操作串行化（B2）：start/stop/restart/install/update 及插件安装等
+// 触碰服务停/启的操作，在用户快速连点、托盘 + 按钮同时按下时会双进程抢端口
+// / 状态横跳。用 promise 链把所有「会停/启服务」的操作排进同一队列串行执行。
+let lifecycleChain: Promise<unknown> = Promise.resolve()
+function serializeLifecycle<T>(fn: () => Promise<T>): Promise<T> {
+  const run = lifecycleChain.then(fn)
+  lifecycleChain = run.catch(() => undefined)
+  return run
+}
+
 async function startDsh(): Promise<AppStatus> {
   if (starting) return buildStatus()
   if (isRunning() || wslIsRunning()) return buildStatus()
@@ -383,15 +393,15 @@ async function applySettings(patch: Partial<AppSettings>): Promise<AppSettings> 
 
 const controller: Controller = {
   getStatus: () => buildStatus(),
-  start: () => startDsh(),
-  stop: async () => {
+  start: () => serializeLifecycle(startDsh),
+  stop: () => serializeLifecycle(async () => {
     await stopServer()
     phase = 'stopped'
     error = null
     broadcastStatus()
     return buildStatus()
-  },
-  restart: async () => {
+  }),
+  restart: () => serializeLifecycle(async () => {
     try {
       await restartServer(onServerExit)
       phase = 'running'
@@ -404,12 +414,12 @@ const controller: Controller = {
     }
     broadcastStatus()
     return buildStatus()
-  },
-  install: async () => {
+  }),
+  install: () => serializeLifecycle(async () => {
     await doInstall(loadSettings().dshVersion || 'latest')
     return buildStatus()
-  },
-  update: (version?: string) => updateDsh(version),
+  }),
+  update: (version?: string) => serializeLifecycle(() => updateDsh(version)),
   listVersions,
   getSettings: () => loadSettings(),
   setSettings: (patch) => applySettings(patch),
@@ -476,7 +486,7 @@ const controller: Controller = {
   },
   listPlugins: () => listInstalledPlugins(),
   searchPlugins: (query, sort, source) => searchPlugins(query, sort, source),
-  installPlugin: async (name, source) => {
+  installPlugin: (name, source) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // WSL：停服 → 安装（备份在停止期间快照，保证一致）→ 恢复原运行状态
       const wasRunning = wslIsRunning()
@@ -488,8 +498,8 @@ const controller: Controller = {
     const r = await installPlugin(name, source)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
-  },
-  uninstallPlugin: async (name) => {
+  }),
+  uninstallPlugin: (name) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       const wasRunning = wslIsRunning()
       if (wasRunning) await stopServer()
@@ -500,9 +510,9 @@ const controller: Controller = {
     const r = await uninstallPlugin(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
-  },
+  }),
   checkPluginUpdates: () => checkPluginUpdates(),
-  updatePlugin: async (name) => {
+  updatePlugin: (name) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // WSL：停服 → 更新（备份在停止期间快照）→ 恢复原运行状态
       const wasRunning = wslIsRunning()
@@ -514,7 +524,7 @@ const controller: Controller = {
     const r = await updatePlugin(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
-  },
+  }),
   pickBackgroundImage: async () => {
     const result = await dialog.showOpenDialog({
       title: '选择背景图片',
@@ -542,7 +552,7 @@ const controller: Controller = {
     if (/^https?:\/\//.test(normalized)) void shell.openExternal(normalized)
   },
   listBackups: async () => listBackups(),
-  restoreBackup: async (name) => {
+  restoreBackup: (name) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // 回退在停服期间执行（profile 快照一致性），完成后恢复原运行状态
       const wasRunning = wslIsRunning()
@@ -554,7 +564,7 @@ const controller: Controller = {
     const r = await restoreBackup(name)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
-  },
+  }),
   deleteBackup: (name) => deleteBackupFile(name),
   // ---------- v0.2.0：WSL 后端 ----------
   backendInfo: () => buildBackendInfo(),
@@ -580,22 +590,24 @@ const controller: Controller = {
     return buildBackendInfo()
   },
   backendSetup: (distro: string) =>
-    runBackendSetup(distro, {
-      emit: (stage, percent, message) => broadcastBackendSetupProgress({ stage, percent, message }),
-      broadcastStatus,
-      stopIfRunning: async () => {
-        if (isRunning() || wslIsRunning()) await stopServer()
-      },
-      resolveDshTarget
-    }),
-  backendSyncFromWindows: async () => {
+    serializeLifecycle(() =>
+      runBackendSetup(distro, {
+        emit: (stage, percent, message) => broadcastBackendSetupProgress({ stage, percent, message }),
+        broadcastStatus,
+        stopIfRunning: async () => {
+          if (isRunning() || wslIsRunning()) await stopServer()
+        },
+        resolveDshTarget
+      })
+    ),
+  backendSyncFromWindows: () => serializeLifecycle(async () => {
     // 与备份同原子性规则：停服 → 同步 → 恢复原运行状态；手动同步允许弹 UAC 打通 GitHub
     const wasRunning = wslIsRunning()
     if (wasRunning) await stopServer()
     const r = await syncFromWindows(undefined, true)
     if (wasRunning) await restartServer(onServerExit)
     return r
-  },
+  }),
   backendInstallDistro: async (name: string) => {
     if (!validateIpcArg(name) || !VALID_DISTRO_RE.test(name)) return { ok: false, message: '非法发行版名' }
     try {
@@ -704,8 +716,22 @@ if (!gotLock) {
     /* no-op：托盘常驻 */
   })
 
-  app.on('before-quit', () => {
+  // Q7：before-quit 必须等 stopServer 完成再退出——WSL 停止是多步 wsl.exe 调用
+  // （kill → 轮询 → pkill 兜底），不等完就退会残留 dsh 进程（下次启动端口死锁）。
+  // 带总超时兜底（8s，stopServer 内部已自带轮询/清理）。
+  let quitCleanupDone = false
+  app.on('before-quit', (e) => {
+    if (quitCleanupDone) return
     quitting = true
-    void stopServer()
+    e.preventDefault()
+    quitCleanupDone = true
+    void (async () => {
+      try {
+        await Promise.race([stopServer(), new Promise<void>((r) => setTimeout(r, 8000))])
+      } catch {
+        /* 忽略，继续退出 */
+      }
+      app.quit()
+    })()
   })
 }

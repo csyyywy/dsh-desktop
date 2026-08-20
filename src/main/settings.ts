@@ -98,13 +98,39 @@ export function loadSettings(): AppSettings {
 }
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
-  const next = { ...loadSettings(), ...patch }
+  const next = { ...loadSettings(), ...sanitizePatch(patch) }
   mkdirSync(dataDir(), { recursive: true })
   const p = settingsPath()
   const tmp = p + '.tmp'
   writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
   renameSync(tmp, p)
   return next
+}
+
+/** 校验设置补丁（Q6）：只接受已知键 + 正确类型——IPC 的 settings:set 是渲染层直传，
+ *  任意键/错误类型（如 port 写成字符串）会污染 settings.json。非法键直接丢弃。 */
+function sanitizePatch(patch: Partial<AppSettings>): Partial<AppSettings> {
+  const out: Partial<AppSettings> = {}
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return out
+  const p = patch as Record<string, unknown>
+  const pick = <K extends keyof AppSettings>(key: K, check: (v: unknown) => boolean): void => {
+    if (check(p[key])) out[key] = p[key] as AppSettings[K]
+  }
+  pick('dshVersion', (v) => typeof v === 'string')
+  pick('workspace', (v) => typeof v === 'string')
+  pick('port', (v) => typeof v === 'number' && Number.isFinite(v))
+  pick('apiKey', (v) => typeof v === 'string')
+  pick('launchOnLogin', (v) => typeof v === 'boolean')
+  pick('theme', (v) => v === 'dark' || v === 'light')
+  pick('appUpdateRepo', (v) => typeof v === 'string')
+  pick('background', (v) => typeof v === 'string')
+  pick('githubToken', (v) => typeof v === 'string')
+  pick('backend', (v) => v === 'local' || v === 'wsl')
+  pick('wslDistro', (v) => typeof v === 'string')
+  pick('wslHome', (v) => typeof v === 'string')
+  pick('wslPort', (v) => typeof v === 'number' && Number.isFinite(v))
+  pick('npmRegistry', (v) => typeof v === 'string')
+  return out
 }
 
 /**

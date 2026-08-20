@@ -4,7 +4,8 @@
 // dsh 本体更新在 dsh-manager + 仪表盘「更新」面板完成，与这里无关。
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { createReadStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadSettings, dataDir } from './settings'
 import { curlJson } from './net'
@@ -14,6 +15,8 @@ interface GhAsset {
   name: string
   size: number
   browser_download_url: string
+  /** GitHub API 自带的 SHA256 摘要，格式 "sha256:<hex>" */
+  digest?: string
 }
 
 interface GhRelease {
@@ -77,7 +80,8 @@ export async function checkAppUpdate(): Promise<AppUpdateInfo> {
       hasUpdate: latest != null && isNewer(latest, current),
       url: j.html_url ?? null,
       assetUrl: asset?.browser_download_url ?? null,
-      assetSize: asset?.size ?? null
+      assetSize: asset?.size ?? null,
+      assetDigest: asset?.digest ?? null
     }
   } catch {
     // 网络/限流等一律视为"无更新信息"，不打断主流程
@@ -98,6 +102,17 @@ function cmpVersion(a: number[], b: number[]): number {
     if (d !== 0) return d
   }
   return 0
+}
+
+/** 计算文件 SHA256（流式，避免整文件读入内存峰值） */
+function sha256File(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    const rs = createReadStream(path)
+    rs.on('data', (c) => hash.update(c))
+    rs.on('end', () => resolve(hash.digest('hex')))
+    rs.on('error', reject)
+  })
 }
 
 /**
@@ -180,33 +195,48 @@ export function downloadAppUpdate(
             resolve({ ok: false, message: `下载失败 (curl exit ${code})：${stderr.trim() || '网络错误'}` })
             return
           }
-          try {
-            const size = statSync(part).size
-            onProgress?.({
-              phase: 'verifying',
-              percent: 100,
-              receivedBytes: size,
-              totalBytes: total,
-              message: '正在校验文件…'
-            })
-            if (total > 0 && size !== total) {
+          // 校验/落名可能含 await（SHA256），包进 async IIFE
+          void (async () => {
+            try {
+              const size = statSync(part).size
+              onProgress?.({
+                phase: 'verifying',
+                percent: 100,
+                receivedBytes: size,
+                totalBytes: total,
+                message: '正在校验文件…'
+              })
+              if (total > 0 && size !== total) {
+                downloading = false
+                resolve({ ok: false, message: `文件校验失败：期望 ${total} 字节，实际 ${size} 字节` })
+                return
+              }
+              if (size < 1024 * 1024) {
+                downloading = false
+                resolve({ ok: false, message: '下载的文件异常过小，已中止' })
+                return
+              }
+              // 1.12：GitHub API 自带 asset digest（sha256:<hex>）时校验，防损坏/被篡改安装包
+              const expected = info.assetDigest?.match(/^sha256:([0-9a-f]{64})$/i)?.[1]
+              if (expected) {
+                onProgress?.({ phase: 'verifying', percent: 100, receivedBytes: size, totalBytes: total, message: '正在校验 SHA256…' })
+                const actual = await sha256File(part)
+                if (actual.toLowerCase() !== expected.toLowerCase()) {
+                  downloading = false
+                  rmSync(part, { force: true })
+                  resolve({ ok: false, message: `SHA256 校验失败：期望 ${expected.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…（下载可能被篡改，已删除）` })
+                  return
+                }
+              }
+              renameSync(part, target)
+              onProgress?.({ phase: 'done', percent: 100, receivedBytes: size, totalBytes: total, message: '下载完成' })
               downloading = false
-              resolve({ ok: false, message: `文件校验失败：期望 ${total} 字节，实际 ${size} 字节` })
-              return
-            }
-            if (size < 1024 * 1024) {
+              resolve({ ok: true, message: `已下载 v${info.latest} 安装包`, path: target })
+            } catch (e) {
               downloading = false
-              resolve({ ok: false, message: '下载的文件异常过小，已中止' })
-              return
+              resolve({ ok: false, message: `文件处理失败：${(e as Error).message}` })
             }
-            renameSync(part, target)
-            onProgress?.({ phase: 'done', percent: 100, receivedBytes: size, totalBytes: total, message: '下载完成' })
-            downloading = false
-            resolve({ ok: true, message: `已下载 v${info.latest} 安装包`, path: target })
-          } catch (e) {
-            downloading = false
-            resolve({ ok: false, message: `文件处理失败：${(e as Error).message}` })
-          }
+          })()
         })
       } catch (e) {
         downloading = false
