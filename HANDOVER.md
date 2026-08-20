@@ -85,6 +85,13 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - **更新完整性（1.12）**：应用更新下载后按 GitHub asset digest 校验 SHA256（流式计算），防损坏/被篡改安装包。
 - **Dashboard 面板拆分（2.2）**：`Dashboard.tsx`（979 行）拆为外壳 + `panels/`（Status/Settings/Update/Logs/Plugins，Plugins 含 PluginRow）；新增 `lib/theme.ts`（FALLBACK_BG/BG_PRESETS 共享）。
 - **tab 切换保活（1.10）**：面板全部常驻挂载、`hidden` 切换——切 tab 不再卸载，文件桥传输进度/更新下载/插件订阅状态不丢失。
+- **构建提速：dsh:bundle 与运行时 dsh 安装/更新统一走 pnpm**（`--config.node-linker=hoisted` 扁平布局 + `--ignore-scripts` + 持久 store）：
+  - `scripts/bundle-dsh.mjs`：内置 pnpm 主路径，store 在 `node_modules/.dsh-pnpm-store`；构建后校验 koffi/node-pty 可加载 + `dsh --version`；pnpm 失败回退 npm。
+  - `dsh-manager.ts`：`installDsh`（本机）/ `installDshWsl`（WSL）改 pnpm 主路径，store 在 `dataDir/pnpm-store`（WSL 在 `<base>/.pnpm-store`）；新增 `verifyDshInstall`/`verifyWslDsh` 原生模块校验，校验失败自动回退 npm（npm 会执行构建脚本补齐预编译）；WSL 全局安装/PATH 固化不变。
+  - **为什么 --ignore-scripts 安全**（dsh 依赖树带构建脚本的包全部可跳过）：koffi 预编译在 `@koromix/koffi-win32-x64` optional dep；node-pty 自带 prebuilds（pty.node/spawn-helper）；`@deepseek-ai/dsh-subprocess-local` postinstall 仅 chmod（Windows 无意义）；`@google/genai`/`protobufjs` 纯 JS。跳过同时规避 pnpm 11 构建审批与 koffi cnoke 联网挂起（实测）。
+  - **实测速度**（本机，store 加热后）：bundle 513 包命中 454/下载 0，pnpm 4.4s、全流程 15.5s；运行时安装 457 包 4.7s。npm 冷装需数分钟。
+  - **关键约束**：pnpm 必须 `hoisted`，isolated 布局的 symlink 会被 `restoreBundledDsh` 的 cpSync 复制失效。
+- **本机构建产物（2026-08-21）**：`dist/DeepSeek Harness-0.2.2-setup.exe` / `-portable.exe` / `win-unpacked/`（内置 dsh **0.1.0-rc.8**、Node v22.21.1、pnpm 11.21.0，均经校验）。winCodeSign-2.6.0 已预下载到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign-2.6.0`。
 
 ---
 
