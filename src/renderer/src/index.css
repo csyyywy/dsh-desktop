@@ -50,6 +50,22 @@ body {
   overflow: hidden;
 }
 
+/* 鲸鱼标志（1.11 修复）：不再对 SVG 源码做脆弱字符串替换。
+ * CSS 覆盖 presentation attribute（fill=... / width=512 height=512）：
+ *  - 颜色：wrapper 的 color 决定 currentColor，path 统一 fill: currentColor；
+ *  - 尺寸：svg 撑满 wrapper（className 负责尺寸类）。 */
+.whale-mark {
+  line-height: 0;
+}
+.whale-mark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.whale-mark svg path {
+  fill: currentColor;
+}
+
 /* —— 科幻启动屏特效 —— */
 @keyframes dsh-scan {
   0% {

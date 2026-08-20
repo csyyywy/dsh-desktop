@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import type { BackendInfo, BackendSetupProgress } from '../../shared/types'
 import { useStatus } from './hooks'
+import { errMsg } from './lib/errors'
 
 const inputCls =
   'w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-brand-500'
@@ -65,12 +66,14 @@ export default function BackendPanel() {
   const [setup, setSetup] = useState<BackendSetupProgress | null>(null)
   const [diagnose, setDiagnose] = useState<string[] | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  // 2.8：全部 useState 提到顶部（此前 distro 声明在计算之后，未来加早退会破坏 hooks 顺序）
+  const [distro, setDistro] = useState('')
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
       setInfo(await window.dsh.backendInfo())
     } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message })
+      setMsg({ ok: false, text: errMsg(e) })
     }
   }, [])
 
@@ -80,23 +83,39 @@ export default function BackendPanel() {
 
   useEffect(() => window.dsh.onBackendSetupProgress((p) => setSetup(p)), [])
 
-  const run = async (fn: () => Promise<unknown>): Promise<void> => {
+  // 刷新后清理已不存在的发行版选中（避免残留失效名）
+  useEffect(() => {
+    if (distro && !(info?.distros ?? []).some((d) => d.name === distro)) setDistro('')
+  }, [info, distro])
+
+  // 1.8：run 保留返回值，并把「正常 resolve 但 ok:false / error 字段」的结构化失败也展示出来
+  const run = async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)
     setMsg(null)
     try {
-      await fn()
+      const r = await fn()
+      if (r && typeof r === 'object') {
+        const rec = r as unknown as Record<string, unknown>
+        // 正常 resolve 但 ok:false / error 字段的结构化失败也要展示（1.8）
+        if ('ok' in rec && rec.ok === false) {
+          setMsg({ ok: false, text: typeof rec.message === 'string' ? rec.message : '操作失败' })
+          return r
+        }
+        if (typeof rec.error === 'string' && rec.error) setMsg({ ok: false, text: rec.error })
+      }
+      return r
     } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message })
+      setMsg({ ok: false, text: errMsg(e) })
     } finally {
       setBusy(false)
       void refresh()
     }
+    return undefined
   }
 
   const running = status?.running ?? false
   const wslActive = status?.backend === 'wsl'
   const deployables = (info?.distros ?? []).filter((d) => d.deployable)
-  const [distro, setDistro] = useState('')
 
   const doSetup = async (): Promise<void> => {
     if (!distro) {

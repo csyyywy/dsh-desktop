@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo, PluginUpdateInfo } from '../../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo, PluginOpResult, PluginUpdateInfo } from '../../shared/types'
 import { useLogs, useStatus, useSettings, updateSettings } from './hooks'
+import { errMsg } from './lib/errors'
 import BackendPanel from './BackendPanel'
 import FileBridgePanel from './FileBridgePanel'
 
@@ -270,9 +271,16 @@ function SettingsPanel() {
   const set = (patch: Partial<AppSettings>): void => setLocal({ ...local, ...patch })
 
   const save = async (): Promise<void> => {
-    await updateSettings(local)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaved(false)
+    setBgErr('')
+    try {
+      await updateSettings(local)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      // 1.2：保存失败要有反馈，不能静默
+      setBgErr('保存失败: ' + errMsg(e))
+    }
   }
 
   const chooseImage = async (): Promise<void> => {
@@ -284,7 +292,7 @@ function SettingsPanel() {
         background: `linear-gradient(rgba(10,13,24,0.5), rgba(10,13,24,0.5)), url("${dataUrl}") center/cover no-repeat`
       })
     } catch (e) {
-      setBgErr((e as Error).message)
+      setBgErr(errMsg(e))
     }
   }
 
@@ -421,10 +429,15 @@ function UpdatePanel() {
   const [dlProgress, setDlProgress] = useState<AppUpdateProgress | null>(null)
   const [appMsg, setAppMsg] = useState('')
   const [appMsgOk, setAppMsgOk] = useState(true)
+  // 检查失败 ≠ 未配置仓库，单独记录错误避免误导（1.3）
+  const [appCheckErr, setAppCheckErr] = useState('')
 
   useEffect(() => {
-    window.dsh.listVersions().then(setVersions)
-    window.dsh.checkAppUpdate().then(setAppInfo)
+    window.dsh.listVersions().then(setVersions).catch(() => setVersions([]))
+    window.dsh
+      .checkAppUpdate()
+      .then(setAppInfo)
+      .catch((e) => setAppCheckErr(errMsg(e)))
   }, [])
 
   useEffect(() => {
@@ -446,15 +459,22 @@ function UpdatePanel() {
     setDlState('downloading')
     setDlProgress(null)
     setAppMsg('')
-    const r = await window.dsh.downloadAppUpdate()
-    if (!r.ok) {
+    try {
+      const r = await window.dsh.downloadAppUpdate()
+      if (!r.ok) {
+        setDlState('idle')
+        setAppMsg(r.message)
+        setAppMsgOk(false)
+      } else {
+        setDlState('downloaded')
+        setAppMsg(r.message)
+        setAppMsgOk(true)
+      }
+    } catch (e) {
+      // 1.2：IPC reject 时不能把按钮永久卡在「下载中…」
       setDlState('idle')
-      setAppMsg(r.message)
+      setAppMsg('下载失败: ' + errMsg(e))
       setAppMsgOk(false)
-    } else {
-      setDlState('downloaded')
-      setAppMsg(r.message)
-      setAppMsgOk(true)
     }
   }
 
@@ -464,7 +484,7 @@ function UpdatePanel() {
       setAppMsg(r.message)
       setAppMsgOk(r.ok)
     } catch (e) {
-      setAppMsg((e as Error).message)
+      setAppMsg(errMsg(e))
       setAppMsgOk(false)
     }
   }
@@ -473,12 +493,17 @@ function UpdatePanel() {
   const latest = status?.latestVersion ?? null
   const updatable = installed != null && latest != null && installed !== latest
 
+  const [actErr, setActErr] = useState('')
   const act = async (fn: () => Promise<unknown>, done: string): Promise<void> => {
     setBusy(true)
     setMsg('')
+    setActErr('')
     try {
       await fn()
       setMsg(done)
+    } catch (e) {
+      // 1.2：更新/回滚失败要展示原因，不能静默
+      setActErr(errMsg(e))
     } finally {
       setBusy(false)
     }
@@ -507,6 +532,7 @@ function UpdatePanel() {
             <p className="text-sm text-slate-400">{installed ? '已是最新版本' : '尚未安装'}</p>
           )}
           {msg && <p className="mt-3 text-sm text-emerald-400">{msg}</p>}
+          {actErr && <p className="mt-3 text-sm text-rose-400">{actErr}</p>}
         </div>
       </Card>
       <Card>
@@ -588,8 +614,10 @@ function UpdatePanel() {
           ) : (
             <p className="mt-2 text-sm text-slate-400">外壳已是最新</p>
           )
+        ) : appCheckErr ? (
+          <p className="mt-2 text-xs text-rose-400">检查更新失败：{appCheckErr}</p>
         ) : (
-          <p className="mt-2 text-xs text-slate-500">未配置更新仓库（可在「设置」里填写 appUpdateRepo 启用）</p>
+          <p className="mt-2 text-xs text-slate-500">检查更新中…</p>
         )}
       </Card>
     </div>
@@ -600,14 +628,23 @@ function UpdatePanel() {
 function LogsPanel() {
   const logs = useLogs()
   const ref = useRef<HTMLDivElement>(null)
+  // 1.6：贴底检测——用户上翻阅读时不再被每行新日志拽回底部
+  const pinnedRef = useRef(true)
+  const onScroll = (): void => {
+    const el = ref.current
+    if (!el) return
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
   useEffect(() => {
-    ref.current?.scrollTo({ top: ref.current.scrollHeight })
+    const el = ref.current
+    if (el && pinnedRef.current) el.scrollTo({ top: el.scrollHeight })
   }, [logs])
   return (
     <div className="space-y-4">
       <Header title="日志" desc="dsh 进程与安装的实时输出" />
       <div
         ref={ref}
+        onScroll={onScroll}
         className="min-h-[60vh] overflow-y-auto rounded-2xl border border-white/10 bg-ink-950/80 p-4 font-mono text-xs leading-relaxed text-slate-300"
       >
         {logs.length === 0 ? (
@@ -632,6 +669,8 @@ function PluginsPanel() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
+  // 1.9：用 PluginOpResult.ok 决定消息配色，不再猜中文前缀
+  const [msgOk, setMsgOk] = useState(true)
   const [backups, setBackups] = useState<string[]>([])
   const [sort, setSort] = useState<'stars' | 'updated'>('stars')
   const [source, setSource] = useState<'github' | 'npm'>('github')
@@ -640,24 +679,48 @@ function PluginsPanel() {
   const [checking, setChecking] = useState(false)
 
   const refreshInstalled = async (): Promise<void> => {
-    setInstalled(await window.dsh.listPlugins())
+    try {
+      setInstalled(await window.dsh.listPlugins())
+    } catch {
+      /* 忽略，保持旧列表 */
+    }
   }
   const refreshUpdates = async (): Promise<void> => {
     setChecking(true)
     try {
       const list = await window.dsh.checkPluginUpdates()
       setUpdates(Object.fromEntries(list.map((u) => [u.name, u])))
+    } catch {
+      /* 忽略 */
     } finally {
       setChecking(false)
     }
   }
   const refreshBackups = async (): Promise<void> => {
-    setBackups(await window.dsh.listBackups())
+    try {
+      setBackups(await window.dsh.listBackups())
+    } catch {
+      /* 忽略 */
+    }
   }
+  // 1.5：搜索竞态防护——快速连点/切源/排序时只接受最新一次请求的结果
+  const searchSeq = useRef(0)
   const search = async (q: string, s: string = sort, src: string = source): Promise<void> => {
+    const seq = ++searchSeq.current
     setLoading(true)
-    setResults(await window.dsh.searchPlugins(q, s, src))
-    setLoading(false)
+    try {
+      const list = await window.dsh.searchPlugins(q, s, src)
+      if (seq !== searchSeq.current) return // 过期响应，丢弃
+      setResults(list)
+      setMsg('')
+    } catch (e) {
+      if (seq !== searchSeq.current) return
+      setResults([])
+      setMsgOk(false)
+      setMsg('搜索失败: ' + errMsg(e))
+    } finally {
+      if (seq === searchSeq.current) setLoading(false)
+    }
   }
   const switchSource = (s: 'github' | 'npm'): void => {
     setSource(s)
@@ -671,71 +734,68 @@ function PluginsPanel() {
     void search('')
   }, [])
 
-  const doInstall = async (name: string): Promise<void> => {
-    setBusy(name)
+  // 1.2：统一「busy + 结果消息 + 异常兜底」——IPC reject 时 busy 必须复位
+  const doOp = async (
+    busyKey: string,
+    fn: () => Promise<PluginOpResult>,
+    after?: () => Promise<void>
+  ): Promise<void> => {
+    setBusy(busyKey)
     setMsg('')
-    const r = await window.dsh.installPlugin(name, source)
-    setMsg(r.message)
-    setBusy(null)
-    await refreshInstalled()
-    await refreshUpdates()
-    await refreshBackups()
-    await search(query)
+    setMsgOk(true)
+    try {
+      const r = await fn()
+      setMsg(r.message)
+      setMsgOk(r.ok)
+      await after?.()
+    } catch (e) {
+      setMsg('操作失败: ' + errMsg(e))
+      setMsgOk(false)
+    } finally {
+      setBusy(null)
+    }
   }
-  const doUninstall = async (name: string): Promise<void> => {
-    setBusy(name)
-    setMsg('')
-    const r = await window.dsh.uninstallPlugin(name)
-    setMsg(r.message)
-    setBusy(null)
-    await refreshInstalled()
-    await refreshUpdates()
-    await refreshBackups()
-    await search(query)
-  }
-  const doUpdate = async (name: string): Promise<void> => {
-    setBusy(name)
-    setMsg('')
-    const r = await window.dsh.updatePlugin(name)
-    setMsg(r.message)
-    setBusy(null)
-    await refreshInstalled()
-    await refreshUpdates()
-    await refreshBackups()
-    await search(query)
-  }
-  const doRestore = async (name: string): Promise<void> => {
-    setBusy(name)
-    setMsg('')
-    const r = await window.dsh.restoreBackup(name)
-    setMsg(r.message)
-    setBusy(null)
-    await refreshInstalled()
-    await refreshBackups()
-    await search(query)
-  }
+  const doInstall = (name: string): Promise<void> =>
+    doOp(name, () => window.dsh.installPlugin(name, source), async () => {
+      await refreshInstalled()
+      await refreshUpdates()
+      await refreshBackups()
+      await search(query)
+    })
+  const doUninstall = (name: string): Promise<void> =>
+    doOp(name, () => window.dsh.uninstallPlugin(name), async () => {
+      await refreshInstalled()
+      await refreshUpdates()
+      await refreshBackups()
+      await search(query)
+    })
+  const doUpdate = (name: string): Promise<void> =>
+    doOp(name, () => window.dsh.updatePlugin(name), async () => {
+      await refreshInstalled()
+      await refreshUpdates()
+      await refreshBackups()
+      await search(query)
+    })
+  const doRestore = (name: string): Promise<void> =>
+    doOp(name, () => window.dsh.restoreBackup(name), async () => {
+      await refreshInstalled()
+      await refreshBackups()
+      await search(query)
+    })
   const doDeleteBackup = async (name: string): Promise<void> => {
     if (!window.confirm(`确定删除备份 ${name}？删除后不可恢复。`)) return
-    setBusy(name)
-    setMsg('')
-    const r = await window.dsh.deleteBackup(name)
-    setMsg(r.message)
-    setBusy(null)
-    await refreshBackups()
+    await doOp(name, () => window.dsh.deleteBackup(name), refreshBackups)
   }
   const doCustomInstall = async (): Promise<void> => {
     const spec = customSpec.trim()
     if (!spec) return
     // 地址（git/https）走 github 源，纯包名走 npm 源
     const src = /^git\+|^git:\/\/|^https?:\/\//.test(spec) ? 'github' : 'npm'
-    setBusy('__custom__')
-    setMsg('')
-    const r = await window.dsh.installPlugin(spec, src)
-    setMsg(r.message)
-    setBusy(null)
     setCustomSpec('')
-    await refreshInstalled()
-    await refreshBackups()
+    await doOp('__custom__', () => window.dsh.installPlugin(spec, src), async () => {
+      await refreshInstalled()
+      await refreshBackups()
+    })
   }
 
   return (
@@ -789,7 +849,11 @@ function PluginsPanel() {
         )}
       </div>
       {msg && (
-        <div className={`rounded-xl border px-4 py-3 text-sm ${msg.startsWith('已') ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-300'}`}>
+        <div
+          className={`rounded-xl border px-4 py-3 text-sm ${
+            msgOk ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+          }`}
+        >
           {msg}
         </div>
       )}

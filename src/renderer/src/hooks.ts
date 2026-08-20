@@ -41,6 +41,7 @@ export function useLogs(max = 400): string[] {
 // —— 设置 store：多个组件（仪表盘背景、设置面板）共享同一份设置并随变更重渲染 ——
 let snapshot: AppSettings | null = null
 const listeners = new Set<() => void>()
+let attempts = 0
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb)
@@ -55,12 +56,27 @@ function notify(): void {
   listeners.forEach((l) => l())
 }
 
-window.dsh.getSettings().then((s) => {
-  snapshot = s
-  notify()
-})
+/** 拉取设置（1.4：模块加载期 IPC 可能尚未就绪，失败有限重试 + 退避）。
+ *  一旦成功即停止；updateSettings 成功后也会写入 snapshot。 */
+function loadSettingsOnce(): void {
+  if (snapshot !== null || attempts >= 10) return
+  attempts++
+  window.dsh
+    .getSettings()
+    .then((s) => {
+      snapshot = s
+      notify()
+    })
+    .catch(() => {
+      setTimeout(loadSettingsOnce, Math.min(2000, 500 * attempts))
+    })
+}
+
+loadSettingsOnce()
 
 export function useSettings(): AppSettings | null {
+  // 从未成功加载且未到上限时，借本次渲染再触发一次
+  if (snapshot === null && attempts < 10) loadSettingsOnce()
   return useSyncExternalStore(subscribe, getSnapshot)
 }
 

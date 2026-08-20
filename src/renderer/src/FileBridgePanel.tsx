@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { FsEntry, FsSide, FsTransferProgress, FsTranslateResult } from '../../shared/types'
 import { useStatus } from './hooks'
+import { errMsg } from './lib/errors'
 
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
@@ -147,24 +148,25 @@ export default function FileBridgePanel() {
     []
   )
 
+  // 目录加载竞态防护（1.7）：每侧递增序号，只接受最新一次请求的响应，
+  // 快速连点/切目录时旧响应不会覆盖新结果
+  const loadSeq = useRef<{ win: number; wsl: number }>({ win: 0, wsl: 0 })
   const load = useCallback(async (side: FsSide, path: string): Promise<void> => {
+    const seq = ++loadSeq.current[side]
     const set = side === 'win' ? setWin : setWsl
     set((p) => ({ ...p, loading: true, error: '' }))
     try {
       const entries = await window.dsh.fsbList(side, path)
+      if (seq !== loadSeq.current[side]) return // 过期响应，丢弃
       set({ side, path, entries, loading: false, error: '', selected: new Set(), loaded: true })
       // 记忆当前位置（win 侧 '' = 盘符列表；wsl 侧路径）
       if (side === 'win') localStorage.setItem('dsh.fsb.winPath', path)
       else localStorage.setItem('dsh.fsb.wslPath', path)
     } catch (e) {
-      set((p) => ({ ...p, loading: false, error: (e as Error).message }))
+      if (seq !== loadSeq.current[side]) return
+      set((p) => ({ ...p, loading: false, error: errMsg(e) }))
     }
   }, [])
-
-  const refreshBoth = useCallback((): void => {
-    void load('win', win.path)
-    void load('wsl', wsl.path)
-  }, [load, win.path, wsl.path])
 
   // 挂载时加载一次（wsl 侧仅当已切到 WSL 后端；win 侧 '' 盘符列表也加载）
   const loadedRef = useRef(false)
@@ -201,13 +203,19 @@ export default function FileBridgePanel() {
         return
       }
       const idx = p.lastIndexOf('\\')
-      if (idx <= 2) return
+      if (idx <= 2) {
+        void load('win', p.slice(0, 3)) // C:\Users → 回到盘符根 C:\（此前在此处直接 return，永远回不去）
+        return
+      }
       void load('win', p.slice(0, idx))
       return
     }
     if (p === '/') return
     const idx = p.lastIndexOf('/')
-    if (idx <= 0) return
+    if (idx <= 0) {
+      void load('wsl', '/') // /foo → 回到根目录（此前直接 return，回不去）
+      return
+    }
     void load('wsl', p.slice(0, idx))
   }
 
@@ -243,7 +251,7 @@ export default function FileBridgePanel() {
         }))
       )
     } catch (e) {
-      window.alert((e as Error).message)
+      window.alert(errMsg(e))
     } finally {
       setBusy(false)
     }
@@ -288,7 +296,7 @@ export default function FileBridgePanel() {
     try {
       setTResult(await window.dsh.fsbTranslate(tInput.trim()))
     } catch (e) {
-      setTError((e as Error).message)
+      setTError(errMsg(e))
     }
   }
 
