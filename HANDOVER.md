@@ -78,6 +78,14 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - **架构**：`index.ts`（1015 行）拆出 `wsl-backend.ts`（部署/同步/降级/诊断，`BackendSetupDeps` 依赖注入、无循环引用），index 降至 ~700 行；渲染层抽取 `ui/` 基元与 `lib/format`（三面板去重）。
 - **settings.ts**：逐字段类型校验（port/backend 等非法值不再原样穿透）+ 损坏文件备份 `.corrupt-<ts>`。
 
+**v0.2.3 补充批次（同一轮优化的后续）**：
+- **生命周期串行化（B2）**：`start/stop/restart/install/update` + 插件安装/卸载/更新 + 回退 + `backendSetup`/`backendSyncFromWindows` 全部经 `serializeLifecycle` 排队——快速连点/托盘+按钮同时按下不再双进程抢端口、状态横跳。
+- **退出清理（Q7）**：`before-quit` 等待 `stopServer` 完成（8s 兜底）再退出，防 WSL 残留 dsh 进程（下次启动端口死锁）。
+- **参数校验（Q6）**：`saveSettings` 补丁白名单校验（settings:set 任意键/错误类型不再污染 settings.json）；`searchPlugins` 的 sort/source 白名单。
+- **更新完整性（1.12）**：应用更新下载后按 GitHub asset digest 校验 SHA256（流式计算），防损坏/被篡改安装包。
+- **Dashboard 面板拆分（2.2）**：`Dashboard.tsx`（979 行）拆为外壳 + `panels/`（Status/Settings/Update/Logs/Plugins，Plugins 含 PluginRow）；新增 `lib/theme.ts`（FALLBACK_BG/BG_PRESETS 共享）。
+- **tab 切换保活（1.10）**：面板全部常驻挂载、`hidden` 切换——切 tab 不再卸载，文件桥传输进度/更新下载/插件订阅状态不丢失。
+
 ---
 
 ## 3. 本机环境（接手者必须知道）
