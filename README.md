@@ -1,5 +1,6 @@
 # DeepSeek Harness 桌面客户端（dsh-desktop）
 
+首先，不建议使用这个客户端。这个客户端目前极不成熟。其次，市面上有很多更优质的客户端。
 把 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`，DeepSeek 开源的 agent harness，架构「一切皆插件」）打包成 Windows 本地桌面程序。
 
 ## 设计原则
