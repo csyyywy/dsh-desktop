@@ -8,7 +8,7 @@
 // 严禁混用：pnpm 在 WSL 内只认 Linux 路径，Windows 侧 fs 只认 UNC。
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { resolveRuntime } from './dsh-manager'
 import { dataDir, dshHome, loadSettings } from './settings'
@@ -18,6 +18,30 @@ import { currentDistro, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnp
 import type { PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
 
 const PROFILE = 'web'
+
+// 插件写操作互斥（1.2）：install/uninstall/update/restore 并发时会同时读写
+// 同一 profile（pnpm 竞态 + package.json 读改写丢失更新）。用 promise 链串行化。
+let opChain: Promise<unknown> = Promise.resolve()
+function withPluginMutex<T>(fn: () => Promise<T>): Promise<T> {
+  const run = opChain.then(fn)
+  opChain = run.catch(() => undefined)
+  return run
+}
+
+/** 并发受限的 map（1.6）：git 插件更新检查每插件打 2 个 GitHub API 请求，
+ *  无 token 时匿名限额 60 次/小时，全并发必然 403；限并发避免打爆限流。 */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let idx = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (idx < items.length) {
+      const i = idx++
+      results[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
 
 /** profile 目录：WSL 模式 = UNC（Windows 侧 fs 用），本机 = Windows 路径 */
 function profileDir(): string {
@@ -211,26 +235,41 @@ export async function restoreBackup(name: string): Promise<PluginOpResult> {
   // 安全校验（与 deleteBackup 同规则）：备份名必须是时间戳格式，
   // 否则 join() 可路径穿越、WSL 回退分支存在命令注入面（高危，必校验）
   if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
-  const src = join(backupsDir(), name)
-  const dir = profileDir()
-  if (!existsSync(src)) return { ok: false, message: '备份不存在' }
-  try {
-    rmSync(dir, { recursive: true, force: true })
-    mkdirSync(dir, { recursive: true })
-    cpSync(src, dir, { recursive: true })
-  } catch (e) {
-    // UNC 失败回退发行版内操作（路径统一 bashQuote，防特殊字符破坏/注入）
-    const linuxDir = profileLinuxDir()
-    const linuxSrc = backupsLinuxDir()
-    if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
-      const res = await runWslBash(`rm -rf ${bashQuote(linuxDir)} && mkdir -p ${bashQuote(linuxDir)} && cp -r ${bashQuote(`${linuxSrc}/${name}`)} ${bashQuote(linuxDir)}`, { silent: true })
-      return res.code === 0
-        ? { ok: true, message: `已回退到 ${name}` }
-        : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }
+  return withPluginMutex(async () => {
+    const src = join(backupsDir(), name)
+    const dir = profileDir()
+    if (!existsSync(src)) return { ok: false, message: '备份不存在' }
+    const staging = dir + '.restore'
+    const oldDir = dir + '.old'
+    try {
+      // 原子恢复（1.3）：先拷到 staging，校验成功后再交换——失败不毁现有 profile
+      rmSync(staging, { recursive: true, force: true })
+      rmSync(oldDir, { recursive: true, force: true })
+      mkdirSync(staging, { recursive: true })
+      cpSync(src, staging, { recursive: true })
+      if (existsSync(dir)) renameSync(dir, oldDir)
+      renameSync(staging, dir)
+      rmSync(oldDir, { recursive: true, force: true })
+    } catch (e) {
+      // 回滚：清理 staging，恢复被换走的原 profile
+      rmSync(staging, { recursive: true, force: true })
+      if (!existsSync(dir) && existsSync(oldDir)) {
+        try { renameSync(oldDir, dir) } catch { /* ignore */ }
+      }
+      rmSync(oldDir, { recursive: true, force: true })
+      // UNC 失败回退发行版内操作（路径统一 bashQuote，防特殊字符破坏/注入）
+      const linuxDir = profileLinuxDir()
+      const linuxSrc = backupsLinuxDir()
+      if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
+        const res = await runWslBash(`rm -rf ${bashQuote(linuxDir)} && mkdir -p ${bashQuote(linuxDir)} && cp -r ${bashQuote(`${linuxSrc}/${name}`)} ${bashQuote(linuxDir)}`, { silent: true })
+        return res.code === 0
+          ? { ok: true, message: `已回退到 ${name}` }
+          : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }
+      }
+      return { ok: false, message: '回退失败: ' + (e as Error).message }
     }
-    return { ok: false, message: '回退失败: ' + (e as Error).message }
-  }
-  return { ok: true, message: `已回退到 ${name}` }
+    return { ok: true, message: `已回退到 ${name}` }
+  })
 }
 
 export function listInstalledRepos(): Set<string> {
@@ -348,8 +387,8 @@ async function latestVersionOf(
 
 export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
   const installed = await listInstalledPlugins()
-  const out: PluginUpdateInfo[] = await Promise.all(
-    installed.map(async (p) => {
+  // 1.6：并发 3，避免 N 个 git 插件瞬间打 2N 个 GitHub API 请求触发匿名限流
+  const out: PluginUpdateInfo[] = await mapLimit(installed, 3, async (p) => {
       const spec = specOf(p.name)
       if (!spec) return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: '依赖记录缺失' }
       if (spec.startsWith('link:')) {
@@ -370,11 +409,11 @@ export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
         return { name: p.name, current: p.version, latest: '', updateAvailable: false, error: (e as Error).message }
       }
     })
-  )
   return out
 }
 
 export async function updatePlugin(name: string): Promise<PluginOpResult> {
+  return withPluginMutex(async () => {
   searchCache = null
   const spec = specOf(name)
   if (!spec) return { ok: false, message: `「${name}」不在依赖列表里，无法更新` }
@@ -414,6 +453,7 @@ export async function updatePlugin(name: string): Promise<PluginOpResult> {
   reconcileBundles(profileDir(), [name], [])
   const now = installedVersionOf(name)
   return { ok: true, message: now ? `已更新 ${name} → v${now}` : `已更新 ${name} → ${target}` }
+  })
 }
 
 export async function listInstalledPlugins(): Promise<PluginInfo[]> {
@@ -656,6 +696,7 @@ function allowBuild(pkgName: string): void {
 }
 
 export async function installPlugin(spec: string, source: string = 'github'): Promise<PluginOpResult> {
+  return withPluginMutex(async () => {
   searchCache = null
   await backupProfile()
   let pnpmSpec: string
@@ -707,9 +748,11 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
   if (info.bundle) return { ok: true, message: `已安装 ${spec}，已注册为 bundle（服务自动重启后生效）` }
   if (!info.entry) return { ok: true, message: `已安装 ${spec}，但该包没有 main/exports 入口，需确认是否可被 dsh 加载` }
   return { ok: true, message: `已安装 ${spec}（未声明 dsh.bundle，需在 cordis.patch.yml 里手动启用）` }
+  })
 }
 
 export async function uninstallPlugin(name: string): Promise<PluginOpResult> {
+  return withPluginMutex(async () => {
   searchCache = null
   await backupProfile()
   const { code, output } = await runPnpm(['remove', name])
@@ -719,4 +762,5 @@ export async function uninstallPlugin(name: string): Promise<PluginOpResult> {
   }
   reconcileBundles(profileDir(), [], [name])
   return { ok: true, message: `已卸载 ${name}` }
+  })
 }

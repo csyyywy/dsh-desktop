@@ -31,6 +31,8 @@ import {
   readFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { toUnc } from './wsl'
+import { pushLog } from './log'
 
 /** 与 dsh-session-persistence-jsonl 一致的 projectKey 编码（目录名 = `--<key>--`） */
 export function projectKey(cwd: string): string {
@@ -119,9 +121,9 @@ function remapWorkspaceRecords(sessionsRoot: string, oldCwd: string, newCwd: str
     const bak = `${wsPath}.bak`
     if (!existsSync(bak)) writeFileSync(bak, readFileSync(wsPath))
     writeFileSync(wsPath, JSON.stringify(j, null, 2) + '\n')
-    console.log(`[migrate] workspace.json: remapped ${changed} record(s) ${oldCwd} -> ${newCwd}`)
+    pushLog(`[migrate] workspace.json: remapped ${changed} record(s) ${oldCwd} -> ${newCwd}`)
   } catch (e) {
-    console.warn(`[migrate] workspace.json remap failed (best-effort): ${(e as Error).message}`)
+    pushLog(`[migrate] workspace.json remap failed (best-effort): ${(e as Error).message}`)
   }
 }
 
@@ -142,11 +144,16 @@ export async function migrateSessionCwds(sessionsRoot: string, workspace: string
   const stats: SessionCwdMigrateStats = { rewritten: 0, moved: 0, skipped: 0, failed: [] }
   if (!existsSync(sessionsRoot)) return stats
   const targetKey = projectKey(workspace)
-  // 迁移目标工作区目录需真实存在（attachSession 会 realpath 校验）；不存在则补建
+  // 迁移目标工作区目录需真实存在（attachSession 会 realpath 校验）；不存在则补建。
+  // 1.13 修复：sessionsRoot 是 UNC（\\wsl.localhost\<distro>\...），workspace 是
+  // Linux 路径——直接 mkdirSync(workspace) 会在 Windows 侧当前盘根建出 C:\home\... 垃圾。
+  // 必须转成 UNC（toUnc）在发行版内补建。
+  const distroMatch = /^\\\\wsl\.(?:localhost|\$)\\([^\\]+)/i.exec(sessionsRoot)
+  const workspaceUnc = distroMatch ? toUnc(distroMatch[1], workspace) : null
   try {
-    mkdirSync(workspace, { recursive: true })
+    if (workspaceUnc) mkdirSync(workspaceUnc, { recursive: true })
   } catch (e) {
-    console.warn(`[migrate] cannot ensure workspace dir ${workspace}: ${(e as Error).message}`)
+    pushLog(`[migrate] cannot ensure workspace dir ${workspaceUnc}: ${(e as Error).message}`)
   }
   for (const proj of readdirSync(sessionsRoot, { withFileTypes: true })) {
     if (!proj.isDirectory()) continue
@@ -196,7 +203,7 @@ export async function migrateSessionCwds(sessionsRoot: string, workspace: string
         if (useZstd) writeFileSync(zstdPath, newRaw)
         else writeFileSync(plainPath, newRaw)
         stats.rewritten++
-        console.log(`[migrate] rewrote ${sess.name} cwd ${oldCwd} -> ${workspace} (${raw.length} -> ${newRaw.length} bytes)`)
+        pushLog(`[migrate] rewrote ${sess.name} cwd ${oldCwd} -> ${workspace} (${raw.length} -> ${newRaw.length} bytes)`)
         remapWorkspaceRecords(sessionsRoot, oldCwd, workspace)
         // 迁移会话目录到匹配新 cwd 的 project 目录。目标已存在旧副本时覆盖：
         // 同一 session id 出现在多个 project 目录会触发 dsh duplicate id 报错，
