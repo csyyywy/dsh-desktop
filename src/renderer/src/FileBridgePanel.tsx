@@ -5,67 +5,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { FsEntry, FsSide, FsTransferProgress, FsTranslateResult } from '../../shared/types'
 import { useStatus } from './hooks'
 import { errMsg } from './lib/errors'
-
-function fmtSize(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`
-  return `${n} B`
-}
-
-function fmtSpeed(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB/s`
-  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB/s`
-  return `${n} B/s`
-}
-
-function fmtTime(ms: number): string {
-  if (!ms) return '—'
-  const d = new Date(ms)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-2xl border border-white/10 bg-ink-900/80 p-5">{children}</div>
-}
-
-function Header({ title, desc }: { title: string; desc: string }) {
-  return (
-    <div className="mb-5">
-      <h1 className="text-xl font-semibold text-white">{title}</h1>
-      <p className="mt-1 text-sm text-slate-400">{desc}</p>
-    </div>
-  )
-}
-
-function Button({
-  variant = 'primary',
-  disabled,
-  onClick,
-  children,
-  title
-}: {
-  variant?: 'primary' | 'ghost' | 'danger'
-  disabled?: boolean
-  onClick: () => void
-  children: ReactNode
-  title?: string
-}) {
-  const styles: Record<string, string> = {
-    primary: 'bg-brand-500 text-white hover:bg-brand-400',
-    ghost: 'bg-white/5 text-slate-200 hover:bg-white/10',
-    danger: 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
-  }
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      title={title}
-      className={`rounded-xl px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${styles[variant]}`}
-    >
-      {children}
-    </button>
-  )
-}
+import { fmtSize, fmtSpeed, fmtTime } from './lib/format'
+import { Button, Card, Header } from './ui'
 
 interface Pane {
   side: FsSide
@@ -349,7 +290,7 @@ export default function FileBridgePanel() {
         }`}
       >
         <div className="flex items-center gap-1 border-b border-white/10 p-2">
-          <Button
+          <Button size="sm"
             variant="ghost"
             onClick={() => up(pane.side)}
             title="上级目录"
@@ -357,7 +298,7 @@ export default function FileBridgePanel() {
           >
             ↑
           </Button>
-          <Button variant="ghost" onClick={() => root(pane.side)} title="根目录">
+          <Button size="sm" variant="ghost" onClick={() => root(pane.side)} title="根目录">
             ⌂
           </Button>
           <input
@@ -368,7 +309,7 @@ export default function FileBridgePanel() {
             }}
             className="min-w-0 flex-1 rounded-lg border border-white/10 bg-ink-900 px-2 py-1 text-xs text-slate-100 outline-none focus:border-brand-500"
           />
-          <Button variant="ghost" onClick={() => void load(pane.side, pane.path)} title="刷新">
+          <Button size="sm" variant="ghost" onClick={() => void load(pane.side, pane.path)} title="刷新">
             ⟳
           </Button>
         </div>
@@ -419,17 +360,17 @@ export default function FileBridgePanel() {
             {pane.entries.filter((e) => e.isDir).length} 个目录 · {pane.entries.filter((e) => !e.isDir).length} 个文件
           </span>
           <div className="flex gap-1">
-            <Button variant="ghost" onClick={() => mkdir(pane.side)} title="新建文件夹">
+            <Button size="sm" variant="ghost" onClick={() => mkdir(pane.side)} title="新建文件夹">
               ＋新建
             </Button>
-            <Button
+            <Button size="sm"
               variant="ghost"
               disabled={pane.selected.size === 0}
               onClick={() => void transfer(pane.side === 'win' ? 'to-wsl' : 'to-win', false)}
             >
               复制 → {pane.side === 'win' ? 'WSL' : 'Windows'}
             </Button>
-            <Button
+            <Button size="sm"
               variant="ghost"
               disabled={pane.selected.size === 0}
               onClick={() => void transfer(pane.side === 'win' ? 'to-wsl' : 'to-win', true)}
@@ -468,7 +409,7 @@ export default function FileBridgePanel() {
         <Card>
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm text-slate-300">传输队列（最多 2 个并发）</div>
-            <Button variant="ghost" onClick={() => setJobs([])}>
+            <Button size="sm" variant="ghost" onClick={() => setJobs([])}>
               清空记录
             </Button>
           </div>
@@ -490,7 +431,7 @@ export default function FileBridgePanel() {
                     </div>
                     <span className={`shrink-0 text-xs font-medium ${meta.color}`}>{meta.label}</span>
                     {j.phase === 'copying' || j.phase === 'queued' ? (
-                      <Button
+                      <Button size="sm"
                         variant="danger"
                         onClick={() => void window.dsh.fsbCancel(j.id)}
                         title="取消传输（自动清理未完成文件）"
@@ -529,7 +470,7 @@ export default function FileBridgePanel() {
             placeholder="粘贴任意路径：C:\... / \\wsl.localhost\... / /home/..."
             className={inputCls}
           />
-          <Button onClick={() => void doTranslate()}>转换</Button>
+          <Button size="sm" onClick={() => void doTranslate()}>转换</Button>
         </div>
         {tError && <div className="mt-2 text-xs text-rose-300">{tError}</div>}
         {tResult && (
@@ -618,10 +559,10 @@ function NamePrompt({
           className="mt-3 w-full rounded-xl border border-white/10 bg-ink-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-brand-500"
         />
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel}>
+          <Button size="sm" variant="ghost" onClick={onCancel}>
             取消
           </Button>
-          <Button onClick={() => onOk(value.trim())}>确定</Button>
+          <Button size="sm" onClick={() => onOk(value.trim())}>确定</Button>
         </div>
       </div>
     </div>

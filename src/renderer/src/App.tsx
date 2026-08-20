@@ -1,7 +1,8 @@
 import Splash from './Splash'
 import Dashboard from './Dashboard'
+import ErrorBoundary from './lib/ErrorBoundary'
 
 export default function App() {
   const view = new URLSearchParams(window.location.search).get('view')
-  return view === 'splash' ? <Splash /> : <Dashboard />
+  return <ErrorBoundary>{view === 'splash' ? <Splash /> : <Dashboard />}</ErrorBoundary>
 }

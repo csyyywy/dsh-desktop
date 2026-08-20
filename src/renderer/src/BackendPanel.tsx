@@ -1,54 +1,9 @@
 // 运行后端面板（v0.2.0）：本机 / WSL 后端切换、发行版管理、一键部署（分阶段进度）、诊断、残留清理。
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { BackendInfo, BackendSetupProgress } from '../../shared/types'
 import { useStatus } from './hooks'
 import { errMsg } from './lib/errors'
-
-const inputCls =
-  'w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-brand-500'
-
-function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-2xl border border-white/10 bg-ink-900/80 p-5">{children}</div>
-}
-
-function Header({ title, desc }: { title: string; desc: string }) {
-  return (
-    <div className="mb-5">
-      <h1 className="text-xl font-semibold text-white">{title}</h1>
-      <p className="mt-1 text-sm text-slate-400">{desc}</p>
-    </div>
-  )
-}
-
-function Button({
-  variant = 'primary',
-  disabled,
-  onClick,
-  children,
-  title
-}: {
-  variant?: 'primary' | 'ghost' | 'danger'
-  disabled?: boolean
-  onClick: () => void
-  children: ReactNode
-  title?: string
-}) {
-  const styles: Record<string, string> = {
-    primary: 'bg-brand-500 text-white hover:bg-brand-400',
-    ghost: 'bg-white/5 text-slate-200 hover:bg-white/10',
-    danger: 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
-  }
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      title={title}
-      className={`rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${styles[variant]}`}
-    >
-      {children}
-    </button>
-  )
-}
+import { Button, Card, Header, inputCls } from './ui'
 
 const STAGE_LABEL: Record<string, string> = {
   ready: '发行版就绪检查',

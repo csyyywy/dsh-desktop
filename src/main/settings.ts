@@ -1,7 +1,8 @@
 import { app } from 'electron'
-import { accessSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AppSettings } from '../shared/types'
+import type { AppSettings, BackendMode, Theme } from '../shared/types'
+import { pushLog } from './log'
 
 const DEFAULTS: AppSettings = {
   dshVersion: 'latest',
@@ -57,12 +58,43 @@ function settingsPath(): string {
 }
 
 export function loadSettings(): AppSettings {
+  let raw: unknown
   try {
-    const parsed = JSON.parse(readFileSync(settingsPath(), 'utf8'))
-    return { ...DEFAULTS, ...parsed }
+    raw = JSON.parse(readFileSync(settingsPath(), 'utf8'))
   } catch {
+    // B12：settings.json 损坏时备份原文件后回默认，避免静默丢配置且无从排查
+    try {
+      const bad = settingsPath()
+      if (existsSync(bad)) {
+        const bak = `${bad}.corrupt-${Date.now()}`
+        renameSync(bad, bak)
+        pushLog(`settings.json 解析失败，已备份到 ${bak}，使用默认设置`)
+      }
+    } catch {
+      /* 备份失败忽略 */
+    }
     return { ...DEFAULTS }
   }
+  // B12：逐字段类型校验——port 写成字符串 "abc" 会原样传给 --port、
+  // backend 写成任意值会走错分支；非法值一律回默认
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ...DEFAULTS }
+  const p = raw as Record<string, unknown>
+  const out: AppSettings = { ...DEFAULTS }
+  if (typeof p.dshVersion === 'string') out.dshVersion = p.dshVersion
+  if (typeof p.workspace === 'string') out.workspace = p.workspace
+  if (typeof p.port === 'number' && Number.isFinite(p.port)) out.port = p.port
+  if (typeof p.apiKey === 'string') out.apiKey = p.apiKey
+  if (typeof p.launchOnLogin === 'boolean') out.launchOnLogin = p.launchOnLogin
+  if (p.theme === 'dark' || p.theme === 'light') out.theme = p.theme as Theme
+  if (typeof p.appUpdateRepo === 'string') out.appUpdateRepo = p.appUpdateRepo
+  if (typeof p.background === 'string') out.background = p.background
+  if (typeof p.githubToken === 'string') out.githubToken = p.githubToken
+  if (p.backend === 'local' || p.backend === 'wsl') out.backend = p.backend as BackendMode
+  if (typeof p.wslDistro === 'string') out.wslDistro = p.wslDistro
+  if (typeof p.wslHome === 'string') out.wslHome = p.wslHome
+  if (typeof p.wslPort === 'number' && Number.isFinite(p.wslPort)) out.wslPort = p.wslPort
+  if (typeof p.npmRegistry === 'string') out.npmRegistry = p.npmRegistry
+  return out
 }
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {

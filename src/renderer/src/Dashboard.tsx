@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateProgress, PluginInfo, PluginOpResult, PluginUpdateInfo } from '../../shared/types'
 import { useLogs, useStatus, useSettings, updateSettings } from './hooks'
 import { errMsg } from './lib/errors'
+import { fmtSize } from './lib/format'
+import { Button, Card, Field, Header, Info, Toggle, inputCls } from './ui'
 import BackendPanel from './BackendPanel'
 import FileBridgePanel from './FileBridgePanel'
 
@@ -18,16 +20,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'plugins', label: '插件' }
 ]
 
-const inputCls =
-  'w-full rounded-xl border border-white/10 bg-ink-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-brand-500'
-
 const FALLBACK_BG = 'radial-gradient(140% 140% at 10% -10%, #1b2547 0%, #0b1020 55%, #0a0d18 100%)'
-
-function fmtSize(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`
-  return `${n} B`
-}
 
 const BG_PRESETS: { name: string; value: string }[] = [
   { name: '深空蓝', value: FALLBACK_BG },
@@ -102,78 +95,6 @@ export default function Dashboard() {
         {tab === 'logs' && <LogsPanel />}
         {tab === 'plugins' && <PluginsPanel />}
       </main>
-    </div>
-  )
-}
-
-// ---------- 基础组件 ----------
-function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-2xl border border-white/10 bg-ink-900/80 p-5">{children}</div>
-}
-
-function Header({ title, desc }: { title: string; desc: string }) {
-  return (
-    <div className="mb-5">
-      <h1 className="text-xl font-semibold text-white">{title}</h1>
-      <p className="mt-1 text-sm text-slate-400">{desc}</p>
-    </div>
-  )
-}
-
-function Button({
-  variant = 'primary',
-  disabled,
-  onClick,
-  children
-}: {
-  variant?: 'primary' | 'ghost' | 'danger'
-  disabled?: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  const styles: Record<string, string> = {
-    primary: 'bg-brand-500 text-white hover:bg-brand-400',
-    ghost: 'bg-white/5 text-slate-200 hover:bg-white/10',
-    danger: 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
-  }
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      className={`rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${styles[variant]}`}
-    >
-      {children}
-    </button>
-  )
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <div className="mb-1.5 text-sm text-slate-300">{label}</div>
-      {children}
-    </label>
-  )
-}
-
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button onClick={() => onChange(!checked)} className="flex w-full items-center justify-between">
-      <span className="text-sm text-slate-300">{label}</span>
-      <span className={`h-6 w-11 rounded-full p-0.5 transition ${checked ? 'bg-brand-500' : 'bg-white/10'}`}>
-        <span className={`block h-5 w-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : ''}`} />
-      </span>
-    </button>
-  )
-}
-
-function Info({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-ink-900/80 p-4">
-      <div className="text-xs text-slate-400">{label}</div>
-      <div className="mt-1 truncate text-sm text-slate-100" title={value}>
-        {value}
-      </div>
     </div>
   )
 }
@@ -363,7 +284,6 @@ function SettingsPanel() {
             />
           </Field>
           <Toggle label="开机自启" checked={local.launchOnLogin} onChange={(v) => set({ launchOnLogin: v })} />
-          <Toggle label="深色主题" checked={local.theme === 'dark'} onChange={(v) => set({ theme: v ? 'dark' : 'light' })} />
 
           <div>
             <div className="mb-2 text-sm text-slate-300">背景</div>
