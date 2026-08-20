@@ -40,7 +40,7 @@ function wslEnv(): NodeJS.ProcessEnv {
 
 function spawnWsl(
   argv: string[],
-  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void }
+  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; onTimeout?: () => void }
 ): Promise<WslResult> {
   return new Promise((resolve) => {
     let child
@@ -52,7 +52,14 @@ function spawnWsl(
     }
     const out: Buffer[] = []
     const err: Buffer[] = []
-    const timer = opts.timeoutMs ? setTimeout(() => { try { child.kill() } catch { /* ignore */ } }, opts.timeoutMs) : null
+    // 1.5：超时只杀 wsl.exe 客户端，发行版内进程不会随之终止——onTimeout 让调用方
+    // （长任务如 pnpm/npm install）补发精确 pkill，避免进程残留占锁
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          try { child.kill() } catch { /* ignore */ }
+          opts.onTimeout?.()
+        }, opts.timeoutMs)
+      : null
     child.stdout?.on('data', (b: Buffer) => {
       out.push(b)
       if (opts.onLine) for (const l of decode(b).split('\n')) { const t = l.trim(); if (t) opts.onLine(t) }
@@ -90,7 +97,7 @@ export function currentDistro(): string | null {
 /** 在指定/当前发行版内执行命令（argv 数组，无 shell 注入面） */
 export function runWsl(
   args: string[],
-  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; distro?: string } = {}
+  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; distro?: string; onTimeout?: () => void } = {}
 ): Promise<WslResult> {
   const distro = opts.distro ?? currentDistro()
   if (!distro) return Promise.resolve({ code: 1, stdout: '', stderr: '未配置 WSL 发行版' })
@@ -106,7 +113,7 @@ export function runWsl(
  */
 export function runWslBash(
   script: string,
-  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; distro?: string } = {}
+  opts: { timeoutMs?: number; silent?: boolean; onLine?: (line: string) => void; distro?: string; onTimeout?: () => void } = {}
 ): Promise<WslResult> {
   return runWsl(['bash', '-lc', script.replace(/\$/g, '\\$')], opts)
 }

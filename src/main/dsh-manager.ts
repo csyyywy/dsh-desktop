@@ -295,7 +295,16 @@ export function installDshWsl(
   // export PATH：npm 的 postinstall 脚本（koffi/node-pty 等）用 `sh -c node`，
   // 发行版 PATH 必须包含我们的 Linux Node（冒烟实测：缺了会 node: not found）
   const script = `export PATH=${bashQuote(`${base}/node/bin`)}:$PATH; ${args.map(bashQuote).join(' ')}`
-  return runWslBash(script, { timeoutMs: 10 * 60 * 1000, onLine, distro }).then(async (r) => {
+  return runWslBash(script, {
+    timeoutMs: 10 * 60 * 1000,
+    onLine,
+    distro,
+    // 1.5：超时只杀 wsl.exe 客户端，发行版内 npm 继续跑会占锁；按 node 路径精确清理
+    onTimeout: () => {
+      pushLog('WSL npm install 超时，尝试终止发行版内的 npm 进程')
+      void runWslBash(`pkill -u $(id -un) -f ${bashQuote(node)} 2>/dev/null`, { silent: true, distro })
+    }
+  }).then(async (r) => {
     if (r.code !== 0) return r.code
     // v0.2.1 兼容性修复：全局安装 + PATH 固化，保证 WSL 终端可直接敲 `dsh`。
     // 应用内部用 --prefix 布局（绝对路径调用），全局布局（<base>/node/bin/dsh）

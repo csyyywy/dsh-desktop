@@ -86,7 +86,15 @@ export async function runPnpm(args: string[]): Promise<{ code: number; output: s
     // export PATH：lifecycle 脚本（node-pty 等原生构建）需要 node in PATH；
     // 用户参数逐个 bashQuote（双引号形式，wsl.exe 外层包装安全）
     const script = `export PATH=${bashQuote(dirname(node))}:$PATH; ${bashQuote(node)} ${bashQuote(pnpm)} --dir ${bashQuote(linuxDir)} ${fullArgs.map(bashQuote).join(' ')}`
-    const res = await runWslBash(script, { timeoutMs: 10 * 60 * 1000 })
+    const res = await runWslBash(script, {
+      timeoutMs: 10 * 60 * 1000,
+      // 1.5：超时只杀了 wsl.exe 客户端，发行版内 pnpm 会继续跑并占 store/profile 锁；
+      // 按 pnpm 可执行路径精确清理（限当前用户）
+      onTimeout: () => {
+        pushLog('pnpm 执行超时，尝试终止发行版内的 pnpm 进程')
+        void runWslBash(`pkill -u $(id -un) -f ${bashQuote(pnpm)} 2>/dev/null`, { silent: true })
+      }
+    })
     return { code: res.code, output: res.stdout + res.stderr }
   }
   return new Promise((resolve) => {
@@ -737,12 +745,15 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
   // pnpm 对没有 package.json 的 git 仓库会"成功"但只生成占位包 —— 检测出来并明确报错，避免静默无效
   const info = inspectInstalled(profileDir(), resolved)
   if (info.placeholder) {
+    // 1.9：pnpm add 已把占位包写进 package.json/node_modules——主动回滚，
+    // 否则依赖记录残留、列表显示"已安装"、再装同名真实包时冲突
+    await runPnpm(['remove', resolved])
     const hint = info.installScript
       ? '仓库含 install.ps1，属于「套装/脚本安装」型仓库（依赖 submodule + 安装脚本），不能直接 pnpm 安装。'
       : '仓库根目录没有 package.json，pnpm 只能装出占位包。'
     return {
       ok: false,
-      message: `「${spec}」已写进依赖，但 ${resolved} 不是可安装的 npm/git 包（${hint}）dsh 不会加载它。请改用 npm 包名安装，或在列表中卸载它。`
+      message: `「${spec}」不是可安装的 npm/git 包（${hint}）已回滚依赖。请改用 npm 包名安装，或按仓库自身机制安装。`
     }
   }
   if (info.bundle) return { ok: true, message: `已安装 ${spec}，已注册为 bundle（服务自动重启后生效）` }
