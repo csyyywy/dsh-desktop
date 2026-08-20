@@ -1,4 +1,4 @@
-import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateResult, BackendInfo, BackendMode, FsEntry, FsSide, FsTransferRequest, FsTranslateResult, PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateInfo, AppUpdateResult, BackendInfo, BackendMode, FsEntry, FsSide, FsTransferRequest, FsTranslateResult, ManualBackupInfo, PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
 
 /** 外壳对外暴露的操作集合：IPC 与托盘都通过它驱动 */
 export interface Controller {
@@ -21,6 +21,7 @@ export interface Controller {
   installAppUpdate(): Promise<AppUpdateResult>
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
+  preflightPlugin(name: string, source?: string): Promise<PluginOpResult>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
   checkPluginUpdates(): Promise<PluginUpdateInfo[]>
@@ -30,6 +31,15 @@ export interface Controller {
   listBackups(): Promise<string[]>
   restoreBackup(name: string): Promise<PluginOpResult>
   deleteBackup(name: string): PluginOpResult
+  // v0.3.0：备份独立界面 + 手动存档
+  backupCreateManual(label?: string): Promise<PluginOpResult>
+  backupListManual(): Promise<ManualBackupInfo[]>
+  backupRestoreManual(name: string): Promise<PluginOpResult>
+  backupDeleteManual(name: string): Promise<PluginOpResult>
+  // v0.3.0：启动失败恢复
+  recoveryUninstallRetry(name: string): Promise<PluginOpResult>
+  recoveryResetData(): Promise<PluginOpResult>
+  recoveryRestart(): Promise<void>
   // v0.2.0：WSL 后端 + 文件桥
   backendInfo(): Promise<BackendInfo>
   backendSetMode(mode: BackendMode): Promise<BackendInfo>

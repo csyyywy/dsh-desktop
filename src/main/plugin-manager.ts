@@ -8,13 +8,14 @@
 // 严禁混用：pnpm 在 WSL 内只认 Linux 路径，Windows 侧 fs 只认 UNC。
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { resolveRuntime } from './dsh-manager'
-import { dataDir, dshHome, loadSettings } from './settings'
+import { loadSettings } from './settings'
 import { pushLog } from './log'
 import { curlJson } from './net'
-import { currentDistro, runWslBash, toUnc, wslBaseLinux, wslDshHomeLinux, wslPnpmCjs, wslNodeBin, bashQuote } from './wsl'
+import { bashQuote, currentDistro, profileDir, profileLinuxDir, runWslBash, wslNodeBin, wslPnpmCjs } from './wsl'
+import { backupProfile } from './backup-manager'
 import type { PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/types'
 
 const PROFILE = 'web'
@@ -43,21 +44,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results
 }
 
-/** profile 目录：WSL 模式 = UNC（Windows 侧 fs 用），本机 = Windows 路径 */
-function profileDir(): string {
-  if (loadSettings().backend === 'wsl') {
-    const d = currentDistro()
-    const l = profileLinuxDir()
-    return d && l ? toUnc(d, l) : join(dshHome(), 'profiles', PROFILE)
-  }
-  return join(dshHome(), 'profiles', PROFILE)
-}
-
-/** profile 目录（发行版内 Linux 路径，仅供 wsl.exe 命令） */
-function profileLinuxDir(): string | null {
-  const home = wslDshHomeLinux()
-  return home ? `${home}/profiles/${PROFILE}` : null
-}
+/** profile 目录 / Linux 路径已移入 wsl.ts（供 plugin-manager / backup-manager 共用） */
 
 function pnpmCjsPath(): string {
   return app.isPackaged
@@ -152,132 +139,6 @@ function reconcileBundles(dir: string, added: string[], removed: string[]): void
     pkg.dsh = { ...pkg.dsh, profile: { ...pkg.dsh?.profile, bundles } }
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
   }
-}
-
-/** 备份目录：WSL 模式 = 发行版内 backups（UNC 形态），本机 = dataDir/backups/plugins */
-function backupsDir(): string {
-  if (loadSettings().backend === 'wsl') {
-    const d = currentDistro()
-    const base = wslBaseLinux()
-    return d && base ? toUnc(d, `${base}/backups/plugins`) : join(dataDir(), 'backups', 'plugins')
-  }
-  return join(dataDir(), 'backups', 'plugins')
-}
-
-/** 备份目录（发行版内 Linux 路径，wsl cp/rm 回退用） */
-function backupsLinuxDir(): string | null {
-  const base = wslBaseLinux()
-  return base ? `${base}/backups/plugins` : null
-}
-
-function timestamp(): string {
-  const d = new Date()
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-}
-
-function pruneBackups(): void {
-  const dir = backupsDir()
-  if (!existsSync(dir)) return
-  const backups = readdirSync(dir).sort().reverse()
-  while (backups.length > 10) {
-    rmSync(join(dir, backups.pop() as string), { recursive: true, force: true })
-  }
-}
-
-/**
- * 安装/卸载前把整个 profile 目录快照到 backups/plugins/<时间戳>。
- * 调用方（controller）保证：WSL 模式下服务已停止后再调用（原子性）。
- * UNC cpSync 失败时回退发行版内 wsl cp -r。
- */
-async function backupProfile(): Promise<void> {
-  const dir = profileDir()
-  if (!existsSync(join(dir, 'package.json'))) return
-  const name = timestamp()
-  const dest = join(backupsDir(), name)
-  const linuxDir = profileLinuxDir()
-  const linuxDest = backupsLinuxDir()
-  try {
-    mkdirSync(dest, { recursive: true })
-    cpSync(dir, dest, { recursive: true })
-  } catch (e) {
-    pushLog('备份 profile（UNC）失败: ' + (e as Error).message)
-    if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
-      // 回退：发行版内直接 cp。先清理同名目标（避免 cp -r 嵌套成 <ts>/web），
-      // 再拷内容（${linuxDir}/. → ${linuxDest}/${name}/）。路径统一 bashQuote。
-      const res = await runWslBash(
-        `rm -rf ${bashQuote(`${linuxDest}/${name}`)} && mkdir -p ${bashQuote(`${linuxDest}/${name}`)} && cp -r ${bashQuote(`${linuxDir}/.`)} ${bashQuote(`${linuxDest}/${name}/`)}`,
-        { silent: true }
-      )
-      if (res.code !== 0) pushLog('备份 profile（wsl cp）失败: ' + (res.stderr || res.stdout).trim())
-    } else {
-      pushLog('备份 profile 失败: ' + (e as Error).message)
-    }
-  }
-  pruneBackups()
-}
-
-export function listBackups(): string[] {
-  const dir = backupsDir()
-  if (!existsSync(dir)) return []
-  return readdirSync(dir).sort().reverse()
-}
-
-// 备份名是 backupProfile 生成的时间戳（YYYYMMDD-HHMMSS）；
-// 删除前必须严格校验，防止构造 ../ 之类路径穿越
-const BACKUP_NAME_RE = /^\d{8}-\d{6}$/
-
-export function deleteBackup(name: string): PluginOpResult {
-  if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
-  const target = join(backupsDir(), name)
-  if (!existsSync(target)) return { ok: false, message: '备份不存在' }
-  try {
-    rmSync(target, { recursive: true, force: true })
-  } catch (e) {
-    return { ok: false, message: '删除失败: ' + (e as Error).message }
-  }
-  return { ok: true, message: `已删除备份 ${name}` }
-}
-
-export async function restoreBackup(name: string): Promise<PluginOpResult> {
-  // 安全校验（与 deleteBackup 同规则）：备份名必须是时间戳格式，
-  // 否则 join() 可路径穿越、WSL 回退分支存在命令注入面（高危，必校验）
-  if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
-  return withPluginMutex(async () => {
-    const src = join(backupsDir(), name)
-    const dir = profileDir()
-    if (!existsSync(src)) return { ok: false, message: '备份不存在' }
-    const staging = dir + '.restore'
-    const oldDir = dir + '.old'
-    try {
-      // 原子恢复（1.3）：先拷到 staging，校验成功后再交换——失败不毁现有 profile
-      rmSync(staging, { recursive: true, force: true })
-      rmSync(oldDir, { recursive: true, force: true })
-      mkdirSync(staging, { recursive: true })
-      cpSync(src, staging, { recursive: true })
-      if (existsSync(dir)) renameSync(dir, oldDir)
-      renameSync(staging, dir)
-      rmSync(oldDir, { recursive: true, force: true })
-    } catch (e) {
-      // 回滚：清理 staging，恢复被换走的原 profile
-      rmSync(staging, { recursive: true, force: true })
-      if (!existsSync(dir) && existsSync(oldDir)) {
-        try { renameSync(oldDir, dir) } catch { /* ignore */ }
-      }
-      rmSync(oldDir, { recursive: true, force: true })
-      // UNC 失败回退发行版内操作（路径统一 bashQuote，防特殊字符破坏/注入）
-      const linuxDir = profileLinuxDir()
-      const linuxSrc = backupsLinuxDir()
-      if (loadSettings().backend === 'wsl' && linuxDir && linuxSrc) {
-        const res = await runWslBash(`rm -rf ${bashQuote(linuxDir)} && mkdir -p ${bashQuote(linuxDir)} && cp -r ${bashQuote(`${linuxSrc}/${name}`)} ${bashQuote(linuxDir)}`, { silent: true })
-        return res.code === 0
-          ? { ok: true, message: `已回退到 ${name}` }
-          : { ok: false, message: '回退失败: ' + (res.stderr || res.stdout).trim() }
-      }
-      return { ok: false, message: '回退失败: ' + (e as Error).message }
-    }
-    return { ok: true, message: `已回退到 ${name}` }
-  })
 }
 
 export function listInstalledRepos(): Set<string> {
@@ -487,6 +348,78 @@ export async function listInstalledPlugins(): Promise<PluginInfo[]> {
 
 let searchCache: { key: string; time: number; results: PluginInfo[] } | null = null
 
+/** 相关性打分（0-100）：query 命中 name 精确 > 前缀 > 子串 > keyword > description；完全无关 = 0。
+ *  用于搜索后置过滤 + 排序，解决「答非所问」：query 与结果名/关键字/描述毫不相关的一律丢弃。 */
+function relevanceOf(name: string, keywords: string[], description: string, q: string): number {
+  if (!q) return 1 // 空 query = 浏览全部
+  const n = q.toLowerCase()
+  const nm = (name || '').toLowerCase()
+  const desc = (description || '').toLowerCase()
+  if (nm === n) return 100
+  if (nm.startsWith(n)) return 85
+  if (nm.includes(n)) return 70
+  const kw = (keywords || []).some((k) => k.toLowerCase().includes(n))
+  if (kw) return 55
+  if (desc.includes(n)) return 40
+  return 0
+}
+
+/** npm search 原生返回（保留 keywords 供相关性打分） */
+interface NpmHit extends PluginInfo {
+  keywords: string[]
+}
+
+async function npmSearch(text: string): Promise<NpmHit[]> {
+  const installed = new Set((await listInstalledPlugins()).map((p) => p.name))
+  const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=40`
+  try {
+    // 走 curlJson（系统 curl），与项目约束一致：Node fetch 在自定义 CA 代理下会 TLS 校验失败
+    const j = (await curlJson(url)) as { objects?: Array<{ package: Record<string, unknown> }> }
+    return (j.objects ?? []).map((o) => {
+      const p = o.package as {
+        name?: string
+        version?: string
+        description?: string
+        keywords?: string[]
+        links?: { npm?: string; repository?: string }
+      }
+      const repo = (p.links?.repository ?? '')
+        .replace(/^git\+/, '')
+        .replace(/^git:\/\//, 'https://')
+        .replace(/\.git$/, '')
+      return {
+        name: p.name ?? '',
+        version: p.version ?? '',
+        description: p.description ?? '',
+        installed: installed.has(p.name ?? ''),
+        stars: 0,
+        keywords: p.keywords ?? [],
+        repoUrl: repo || (p.links?.npm ?? '')
+      }
+    })
+  } catch {
+    return []
+  }
+}
+
+async function searchNpm(query: string): Promise<PluginInfo[]> {
+  const q = (query || '').trim()
+  const strict = await npmSearch(`keywords:dsh-plugin${q ? ' ' + q : ''}`)
+  let all = strict
+  if (q && strict.length < 5) {
+    // 严格结果不足：用关键词兜底并集（避免「答非所问」时整体为空）
+    const fallback = await npmSearch(`keywords:${q}`)
+    const seen = new Set(strict.map((r) => r.name))
+    all = [...strict, ...fallback.filter((r) => !seen.has(r.name))]
+  }
+  return all
+    .map((r) => ({ r, score: relevanceOf(r.name, r.keywords, r.description, q) }))
+    .filter((x) => x.score > 0 || !q)
+    .sort((a, b) => b.score - a.score || (a.r.name < b.r.name ? -1 : 1))
+    .map((x) => x.r)
+    .slice(0, 40)
+}
+
 async function searchGithub(query: string, sort: string): Promise<PluginInfo[]> {
   const q = (query || '').trim()
   const key = `gh|${q}|${sort}`
@@ -494,7 +427,9 @@ async function searchGithub(query: string, sort: string): Promise<PluginInfo[]> 
     return searchCache.results
   }
   const installedRepos = listInstalledRepos()
-  const text = q ? `topic:dsh-plugin ${q}` : 'topic:dsh-plugin'
+  // GitHub 仓库搜索：query 限定在 name/description/topics 内（避免 readme 弱相关命中），
+  // 再加 topic:dsh-plugin 约束；结果经相关性过滤排序。
+  const text = q ? `${q} in:name,description,topics topic:dsh-plugin` : 'topic:dsh-plugin'
   const sortParam = sort === 'updated' ? 'updated' : 'stars'
   const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(text)}&sort=${sortParam}&order=desc&per_page=40`
   const token = loadSettings().githubToken?.trim()
@@ -506,7 +441,7 @@ async function searchGithub(query: string, sort: string): Promise<PluginInfo[]> 
       pushLog('GitHub 搜索失败: ' + (j.message || '无有效响应（可能是 API 限流）'))
       return []
     }
-    const results = j.items
+    const raw = j.items
       .filter((r) => {
         const name = (r.full_name as string) ?? ''
         if (name === 'deepseek-ai/deepseek-harness') return false // 本体非插件
@@ -523,46 +458,20 @@ async function searchGithub(query: string, sort: string): Promise<PluginInfo[]> 
           installed: installedRepos.has(fullName),
           stars: (r.stargazers_count as number) ?? 0,
           updatedAt: (r.pushed_at as string) ?? '',
-          repoUrl: (r.html_url as string) ?? ''
+          repoUrl: (r.html_url as string) ?? '',
+          topics: (r.topics as string[]) ?? []
         }
       })
+    const results = raw
+      .map((r) => ({ r, score: relevanceOf(r.repo, r.topics, r.description, q) }))
+      .filter((x) => x.score > 0 || !q)
+      .sort((a, b) => b.score - a.score || b.r.stars - a.r.stars)
+      .map(({ r }) => ({ ...r, topics: undefined }))
+      .slice(0, 40)
     searchCache = { key, time: Date.now(), results }
     return results
   } catch (e) {
     pushLog('GitHub 搜索失败: ' + (e as Error).message)
-    return []
-  }
-}
-
-async function searchNpm(query: string): Promise<PluginInfo[]> {
-  const installed = new Set((await listInstalledPlugins()).map((p) => p.name))
-  const q = (query || '').trim()
-  const text = q ? `keywords:dsh-plugin ${q}` : 'keywords:dsh-plugin'
-  const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=40`
-  try {
-    // 走 curlJson（系统 curl），与项目约束一致：Node fetch 在自定义 CA 代理下会 TLS 校验失败
-    const j = (await curlJson(url)) as { objects?: Array<{ package: Record<string, unknown> }> }
-    return (j.objects ?? []).map((o) => {
-      const p = o.package as {
-        name?: string
-        version?: string
-        description?: string
-        links?: { npm?: string; repository?: string }
-      }
-      const repo = (p.links?.repository ?? '')
-        .replace(/^git\+/, '')
-        .replace(/^git:\/\//, 'https://')
-        .replace(/\.git$/, '')
-      return {
-        name: p.name ?? '',
-        version: p.version ?? '',
-        description: p.description ?? '',
-        installed: installed.has(p.name ?? ''),
-        stars: 0,
-        repoUrl: repo || (p.links?.npm ?? '')
-      }
-    })
-  } catch {
     return []
   }
 }
@@ -703,6 +612,94 @@ function allowBuild(pkgName: string): void {
     }
   } catch (e) {
     pushLog('放行构建脚本失败: ' + pkgName + ' ' + (e as Error).message)
+  }
+}
+
+/** 读取 profile package.json（解析失败返回 null）；供恢复模块等复用 */
+export function readProfilePkg(): Record<string, unknown> | null {
+  const pkgPath = join(profileDir(), 'package.json')
+  if (!existsSync(pkgPath)) return null
+  try {
+    return JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/** 读取已安装包的 package.json（node_modules/<name>/package.json） */
+function readInstalledPackageJson(name: string): Record<string, unknown> | null {
+  const pkgPath = join(profileDir(), 'node_modules', name, 'package.json')
+  if (!existsSync(pkgPath)) return null
+  try {
+    return JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/** 从 registry 取某 npm 包的元数据（latest 版本的信息） */
+async function fetchNpmPackageMeta(name: string): Promise<Record<string, unknown> | null> {
+  try {
+    const registry = (loadSettings().npmRegistry?.trim() || 'https://registry.npmjs.org').replace(/\/+$/, '')
+    return (await curlJson(`${registry}/${encodeURIComponent(name)}/latest`)) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/** 从包的 dsh.bundle.patch 声明中提取注册标识（id/name/文件名）集合 */
+function patchIdsOf(pkg: Record<string, unknown> | null | undefined): string[] {
+  const p = (pkg as { dsh?: { bundle?: { patch?: unknown } } } | undefined)?.dsh?.bundle?.patch
+  if (!p) return []
+  if (typeof p === 'string') return [p]
+  if (Array.isArray(p)) return p.flatMap((x) => (typeof x === 'string' ? [x] : patchIdsOf(x)))
+  if (typeof p === 'object') {
+    const obj = p as Record<string, unknown>
+    return [...Object.keys(obj), ...Object.values(obj).flatMap((v) => patchIdsOf((v ?? {}) as Record<string, unknown>))]
+  }
+  return []
+}
+
+/**
+ * 安装前冲突预检（v0.3.0：先检测再安装，借鉴 zat-dsh-engine 冲突门禁思路）：
+ * - 同名依赖已装 → 冲突；
+ * - 候选包声明的 dsh.bundle.patch 注册标识与已装插件重叠 → 冲突（duplicate patch/loader/slot）；
+ * - 无法解析候选包（git 仓库无 package.json / 网络失败）→ 降级为仅同名检测（warning 不阻断）。
+ */
+export async function preflightPluginInstall(spec: string, source: string = 'github'): Promise<PluginOpResult> {
+  const conflicts: string[] = []
+  const warnings: string[] = []
+  let npmName: string | null = null
+  let candidate: Record<string, unknown> | null = null
+  if (source === 'npm') {
+    npmName = spec
+    candidate = await fetchNpmPackageMeta(spec)
+  } else {
+    const repo = /github\.com[/:]([^/]+\/[^/#?]+)/.exec(spec)?.[1]?.replace(/\.git$/, '') ?? spec
+    npmName = await fetchRepoNpmName(repo)
+    candidate = npmName ? await fetchNpmPackageMeta(npmName) : null
+  }
+  const installed = await listInstalledPlugins()
+  if (npmName && installed.some((p) => p.name === npmName)) {
+    conflicts.push(`已安装同名插件「${npmName}」，安装将覆盖/升级它（建议先更新或卸载）`)
+  }
+  const candIds = candidate ? patchIdsOf(candidate) : []
+  if (candIds.length > 0) {
+    for (const ip of installed) {
+      const ipIds = patchIdsOf(readInstalledPackageJson(ip.name))
+      const overlap = candIds.filter((id) => ipIds.includes(id))
+      if (overlap.length > 0) {
+        conflicts.push(`与「${ip.name}」冲突：重复注册 ${[...new Set(overlap)].join('、')}`)
+      }
+    }
+  }
+  if (!npmName) warnings.push('未能解析出候选包的 npm 包名，仅做已安装同名检测')
+  else if (!candidate) warnings.push('无法获取候选包元数据（网络/限流），已跳过深层冲突检测')
+  return {
+    ok: conflicts.length === 0,
+    message: conflicts.length > 0 ? `检测到 ${conflicts.length} 项安装冲突，建议先处理再安装` : '未检测到冲突，可以安装',
+    conflicts,
+    warnings
   }
 }
 

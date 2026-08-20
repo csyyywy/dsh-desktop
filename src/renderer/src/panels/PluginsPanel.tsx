@@ -13,7 +13,6 @@ export default function PluginsPanel() {
   const [msg, setMsg] = useState('')
   // 1.9：用 PluginOpResult.ok 决定消息配色，不再猜中文前缀
   const [msgOk, setMsgOk] = useState(true)
-  const [backups, setBackups] = useState<string[]>([])
   const [sort, setSort] = useState<'stars' | 'updated'>('stars')
   const [source, setSource] = useState<'github' | 'npm'>('github')
   const [customSpec, setCustomSpec] = useState('')
@@ -36,13 +35,6 @@ export default function PluginsPanel() {
       /* 忽略 */
     } finally {
       setChecking(false)
-    }
-  }
-  const refreshBackups = async (): Promise<void> => {
-    try {
-      setBackups(await window.dsh.listBackups())
-    } catch {
-      /* 忽略 */
     }
   }
   // 1.5：搜索竞态防护——快速连点/切源/排序时只接受最新一次请求的结果
@@ -72,7 +64,6 @@ export default function PluginsPanel() {
   useEffect(() => {
     void refreshInstalled()
     void refreshUpdates()
-    void refreshBackups()
     void search('')
   }, [])
 
@@ -97,47 +88,54 @@ export default function PluginsPanel() {
       setBusy(null)
     }
   }
-  const doInstall = (name: string): Promise<void> =>
-    doOp(name, () => window.dsh.installPlugin(name, source), async () => {
+  // v0.3.0：安装前冲突预检（先检测再安装）——命中冲突先报告，用户确认后才继续
+  const preflightAndInstall = async (busyKey: string, name: string, src: string): Promise<void> => {
+    setBusy(busyKey)
+    setMsg('')
+    setMsgOk(true)
+    try {
+      const check = await window.dsh.preflightPlugin(name, src)
+      const detail = [...(check.conflicts ?? []), ...(check.warnings ?? [])].map((c) => `· ${c}`).join('\n')
+      if (!check.ok) {
+        setMsg(`${check.message}\n${detail}`)
+        setMsgOk(false)
+        if (!window.confirm(`${check.message}\n\n${detail}\n\n仍要安装吗？`)) return
+      } else if (detail) {
+        setMsg(`提示：\n${detail}`)
+      }
+      const r = await window.dsh.installPlugin(name, src)
+      setMsg(r.message)
+      setMsgOk(r.ok)
       await refreshInstalled()
       await refreshUpdates()
-      await refreshBackups()
       await search(query)
-    })
+    } catch (e) {
+      setMsg('安装失败: ' + errMsg(e))
+      setMsgOk(false)
+    } finally {
+      setBusy(null)
+    }
+  }
+  const doInstall = (name: string): Promise<void> => preflightAndInstall(name, name, source)
   const doUninstall = (name: string): Promise<void> =>
     doOp(name, () => window.dsh.uninstallPlugin(name), async () => {
       await refreshInstalled()
       await refreshUpdates()
-      await refreshBackups()
       await search(query)
     })
   const doUpdate = (name: string): Promise<void> =>
     doOp(name, () => window.dsh.updatePlugin(name), async () => {
       await refreshInstalled()
       await refreshUpdates()
-      await refreshBackups()
       await search(query)
     })
-  const doRestore = (name: string): Promise<void> =>
-    doOp(name, () => window.dsh.restoreBackup(name), async () => {
-      await refreshInstalled()
-      await refreshBackups()
-      await search(query)
-    })
-  const doDeleteBackup = async (name: string): Promise<void> => {
-    if (!window.confirm(`确定删除备份 ${name}？删除后不可恢复。`)) return
-    await doOp(name, () => window.dsh.deleteBackup(name), refreshBackups)
-  }
   const doCustomInstall = async (): Promise<void> => {
     const spec = customSpec.trim()
     if (!spec) return
     // 地址（git/https）走 github 源，纯包名走 npm 源
     const src = /^git\+|^git:\/\/|^https?:\/\//.test(spec) ? 'github' : 'npm'
     setCustomSpec('')
-    await doOp('__custom__', () => window.dsh.installPlugin(spec, src), async () => {
-      await refreshInstalled()
-      await refreshBackups()
-    })
+    await preflightAndInstall('__custom__', spec, src)
   }
 
   return (
@@ -192,7 +190,7 @@ export default function PluginsPanel() {
       </div>
       {msg && (
         <div
-          className={`rounded-xl border px-4 py-3 text-sm ${
+          className={`whitespace-pre-line rounded-xl border px-4 py-3 text-sm ${
             msgOk ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-300'
           }`}
         >
@@ -260,38 +258,6 @@ export default function PluginsPanel() {
           <div className="space-y-2">
             {results.map((p) => (
               <PluginRow key={p.name} p={p} busy={busy} onInstall={() => doInstall(p.repo ?? p.name)} />
-            ))}
-          </div>
-        )}
-      </Card>
-
-      <Card>
-        <div className="mb-1 text-sm font-medium text-slate-200">备份与回退</div>
-        <p className="mb-3 text-xs text-slate-400">每次安装/卸载插件前会自动备份当前环境，可一键回退。</p>
-        {backups.length === 0 ? (
-          <p className="text-sm text-slate-500">暂无备份（安装一次插件后自动生成）</p>
-        ) : (
-          <div className="space-y-2">
-            {backups.map((b) => (
-              <div key={b} className="flex items-center justify-between rounded-xl border border-white/10 bg-ink-950/70 px-4 py-2">
-                <span className="font-mono text-xs text-slate-300">{b}</span>
-                <div className="flex shrink-0 gap-2">
-                  <button
-                    disabled={busy === b}
-                    onClick={() => void doRestore(b)}
-                    className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-brand-500/20 hover:text-brand-300 disabled:opacity-50"
-                  >
-                    {busy === b ? '回退中…' : '回退'}
-                  </button>
-                  <button
-                    disabled={busy === b}
-                    onClick={() => void doDeleteBackup(b)}
-                    className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-50"
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
             ))}
           </div>
         )}

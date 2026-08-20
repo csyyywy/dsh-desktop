@@ -11,8 +11,9 @@ import SettingsPanel from './panels/SettingsPanel'
 import UpdatePanel from './panels/UpdatePanel'
 import LogsPanel from './panels/LogsPanel'
 import PluginsPanel from './panels/PluginsPanel'
+import BackupPanel from './panels/BackupPanel'
 
-type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins' | 'backend' | 'files'
+type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins' | 'backups' | 'backend' | 'files'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'status', label: '状态' },
@@ -21,7 +22,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'files', label: '文件桥' },
   { id: 'update', label: '更新' },
   { id: 'logs', label: '日志' },
-  { id: 'plugins', label: '插件' }
+  { id: 'plugins', label: '插件' },
+  { id: 'backups', label: '备份与回退' }
 ]
 
 export default function Dashboard() {
@@ -86,6 +88,9 @@ export default function Dashboard() {
         </div>
         <div className={tab === 'plugins' ? '' : 'hidden'}>
           <PluginsPanel />
+        </div>
+        <div className={tab === 'backups' ? '' : 'hidden'}>
+          <BackupPanel />
         </div>
       </main>
     </div>

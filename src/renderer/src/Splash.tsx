@@ -3,6 +3,7 @@ import type { AppStatus, InstallProgress } from '../../shared/types'
 import { useSettings } from './hooks'
 import { FALLBACK_BG } from './lib/theme'
 import WhaleMark from './WhaleMark'
+import RecoveryActions from './RecoveryActions'
 
 const PARTICLES = [
   { left: '12%', top: '28%', delay: '0s', size: 3 },
@@ -109,6 +110,9 @@ export default function Splash() {
       <div className="relative h-6 w-6 animate-spin rounded-full border-2 border-white/15 border-t-cyan-300" />
 
       <div className="line-clamp-3 max-w-[320px] break-all text-center text-sm text-slate-300">{message}</div>
+
+      {/* v0.3.0：#94/#96/#98 启动失败恢复面 */}
+      {isError && status?.recovery && <RecoveryActions recovery={status.recovery} />}
 
       {isError && (
         <div className="flex gap-2">

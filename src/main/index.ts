@@ -5,14 +5,16 @@ import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
-import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, PluginOpResult, ServerPhase } from '../shared/types'
+import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, ManualBackupInfo, PluginOpResult, PluginRecoveryInfo, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
 import { loadSettings, saveSettings, dshHome } from './settings'
 import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
-import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl } from './server'
+import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl, getLastStartupStderr, getPortNote } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
-import { listBackups, listInstalledPlugins, restoreBackup, runPnpm, searchPlugins, installPlugin, uninstallPlugin, checkPluginUpdates, updatePlugin, deleteBackup as deleteBackupFile } from './plugin-manager'
+import { listInstalledPlugins, runPnpm, searchPlugins, preflightPluginInstall as preflightPluginFile, installPlugin, uninstallPlugin, checkPluginUpdates, updatePlugin } from './plugin-manager'
+import { createManualBackup, deleteBackup as deleteBackupFile, deleteManualBackup, listBackups, listManualBackups, resetHarnessData as resetHarnessDataFile, restoreBackup, restoreManualBackup } from './backup-manager'
+import { detectPluginRecovery } from './plugin-recovery'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
@@ -28,6 +30,8 @@ import {
 } from './fs-bridge'
 
 const PRELOAD = join(__dirname, '../preload/index.js')
+// 主窗口加载 dsh Web UI，用最小面 preload（仅恢复 API + 错误卡注入，不暴露完整 window.dsh）
+const MAIN_WINDOW_PRELOAD = join(__dirname, '../preload/main-window-preload.js')
 
 let mainWindow: BrowserWindow | null = null
 let dashboardWindow: BrowserWindow | null = null
@@ -39,6 +43,9 @@ let error: string | null = null
 let webUIStale = true
 let latestVersionCache: string | null = null
 let quitting = false
+// v0.3.0：启动失败恢复状态（#94/#96/#98）——恢复进行中禁止主窗口导航到破损 URL
+let currentRecovery: PluginRecoveryInfo | null = null
+let recoveryPending = false
 
 // ---------- 渲染层加载 ----------
 function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
@@ -103,7 +110,7 @@ function createMain(): BrowserWindow {
     icon: iconPath('icon.png'),
     backgroundColor: '#0b1020',
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false }
+    webPreferences: { contextIsolation: true, nodeIntegration: false, preload: MAIN_WINDOW_PRELOAD }
   })
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url)
@@ -147,11 +154,18 @@ function mainTargetUrl(): string {
 function reloadMain(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (!isRunning() && !wslIsRunning()) return
+  // #96：恢复进行中不导航到破损 URL（留在仪表盘/恢复界面）
+  if (recoveryPending) return
   webUIStale = false
   void mainWindow.loadURL(mainTargetUrl())
 }
 
 function openMain(): void {
+  // #96：恢复进行中不打开破损的 Web UI，改开仪表盘展示恢复界面
+  if (recoveryPending) {
+    showDashboard()
+    return
+  }
   // WSL 模式没有本机 proc 句柄，isRunning() 恒 false——必须同时看 wslIsRunning()，
   // 否则启动成功后这里会误判"未运行"而递归 startDsh（被互斥锁挡住）→ 主窗口不弹出
   if (!isRunning() && !wslIsRunning()) {
@@ -228,7 +242,9 @@ function buildStatus(): AppStatus {
     backend: s.backend,
     wslDistro: wslMode ? s.wslDistro : null,
     wslReady: wslMode && !!s.wslDistro && wslIsComplete(),
-    stalePid: wslMode ? wslStale() : null
+    stalePid: wslMode ? wslStale() : null,
+    portNote: getPortNote(),
+    recovery: currentRecovery
   }
 }
 
@@ -338,12 +354,23 @@ async function startDsh(): Promise<AppStatus> {
       // 不再向外 throw，避免 openMain/托盘等 `void startDsh()` 出现未处理拒绝
       await ensureInstalled()
       await startServer(onServerExit)
+      // #96：稳定健康窗口——启动成功后保持 500ms 复检，期间进程崩溃视为失败进入恢复，
+      // 避免"假成功"离开启动屏后卡在空窗口
+      await new Promise((r) => setTimeout(r, 500))
+      if (!isRunning() && !wslIsRunning()) {
+        throw new Error('dsh 启动后立即退出（不稳定），详见日志')
+      }
       phase = 'running'
       error = null
+      currentRecovery = null
+      recoveryPending = false
       openMain()
     } catch (e) {
       phase = 'error'
       error = (e as Error).message
+      // v0.3.0：#81/#94/#96/#98 —— 启动失败 → 解析 stderr 生成插件冲突恢复信息
+      currentRecovery = await detectPluginRecovery(getLastStartupStderr()).catch(() => null)
+      recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
       broadcastProgress({ phase: 'error', message: error })
     }
     broadcastStatus()
@@ -358,6 +385,8 @@ async function restartForPluginChange(): Promise<void> {
     await restartServer(onServerExit)
     phase = 'running'
     error = null
+    currentRecovery = null
+    recoveryPending = false
     // 插件变更后 dsh 已重启（web UI 的 __DSH_BOOT__ 已包含新客户端），
     // 重新导航主窗口到当前端口让新面板立即生效（原地 reload 会停留在旧端口 URL）
     webUIStale = true
@@ -365,6 +394,8 @@ async function restartForPluginChange(): Promise<void> {
   } catch (e) {
     phase = 'error'
     error = (e as Error).message
+    currentRecovery = await detectPluginRecovery(getLastStartupStderr()).catch(() => null)
+    recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
   }
   broadcastStatus()
 }
@@ -406,11 +437,16 @@ const controller: Controller = {
       await restartServer(onServerExit)
       phase = 'running'
       error = null
+      currentRecovery = null
+      recoveryPending = false
       webUIStale = true
       reloadMain()
     } catch (e) {
       phase = 'error'
       error = (e as Error).message
+      // #96：手动重启也必须经过恢复态机——重启失败后重新检测，冲突仍在则回到恢复界面
+      currentRecovery = await detectPluginRecovery(getLastStartupStderr()).catch(() => null)
+      recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
     }
     broadcastStatus()
     return buildStatus()
@@ -486,6 +522,8 @@ const controller: Controller = {
   },
   listPlugins: () => listInstalledPlugins(),
   searchPlugins: (query, sort, source) => searchPlugins(query, sort, source),
+  // v0.3.0：安装前冲突预检（只读，不动服务/插件）
+  preflightPlugin: (name, source) => preflightPluginFile(name, source),
   installPlugin: (name, source) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // WSL：停服 → 安装（备份在停止期间快照，保证一致）→ 恢复原运行状态
@@ -566,6 +604,76 @@ const controller: Controller = {
     return r
   }),
   deleteBackup: (name) => deleteBackupFile(name),
+  // ---------- v0.3.0：备份独立界面 + 手动存档 ----------
+  backupCreateManual: (label) => serializeLifecycle(() => createManualBackup(label)),
+  backupListManual: async () => listManualBackups(),
+  backupRestoreManual: (name) => serializeLifecycle(async () => {
+    // 恢复手动存档：停服 → 恢复（内部已先快照当前环境）→ 重新启动
+    const wasRunning = isRunning() || wslIsRunning()
+    if (wasRunning) await stopServer()
+    const r = await restoreManualBackup(name)
+    if (r.ok) await startDsh()
+    broadcastStatus()
+    return r
+  }),
+  backupDeleteManual: (name) => deleteManualBackup(name),
+  // ---------- v0.3.0：启动失败恢复（#81/#94/#96/#98） ----------
+  recoveryUninstallRetry: (name) => serializeLifecycle(async () => {
+    const wasRunning = isRunning() || wslIsRunning()
+    if (wasRunning) await stopServer()
+    const r = await uninstallPlugin(name)
+    if (!r.ok) {
+      broadcastStatus()
+      return r
+    }
+    // 重新启动并复检（#96 恢复态机）：冲突仍在则回到恢复界面
+    try {
+      await startServer(onServerExit)
+      await new Promise((res) => setTimeout(res, 500))
+      if (!isRunning() && !wslIsRunning()) throw new Error('dsh 启动后立即退出')
+      phase = 'running'
+      error = null
+      currentRecovery = null
+      recoveryPending = false
+    } catch (e) {
+      phase = 'error'
+      error = (e as Error).message
+      currentRecovery = await detectPluginRecovery(getLastStartupStderr()).catch(() => null)
+      recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
+    }
+    broadcastStatus()
+    return currentRecovery
+      ? { ok: false, message: `已卸载 ${name}，但启动仍失败：${currentRecovery.message}` }
+      : { ok: true, message: `已卸载 ${name} 并成功启动` }
+  }),
+  recoveryResetData: () => serializeLifecycle(async () => {
+    if (isRunning() || wslIsRunning()) await stopServer()
+    const r = await resetHarnessDataFile()
+    if (!r.ok) {
+      broadcastStatus()
+      return r
+    }
+    await startDsh()
+    broadcastStatus()
+    return { ok: true, message: r.message }
+  }),
+  recoveryRestart: () => serializeLifecycle(async () => {
+    // #96：主窗口错误卡「重启 Harness」——重启后复检，冲突仍在则留在恢复界面
+    try {
+      await restartServer(onServerExit)
+      phase = 'running'
+      error = null
+      currentRecovery = null
+      recoveryPending = false
+    } catch (e) {
+      phase = 'error'
+      error = (e as Error).message
+      currentRecovery = await detectPluginRecovery(getLastStartupStderr()).catch(() => null)
+      recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
+    }
+    broadcastStatus()
+    reloadMain()
+  }),
   // ---------- v0.2.0：WSL 后端 ----------
   backendInfo: () => buildBackendInfo(),
   backendSetMode: async (mode: BackendMode) => {

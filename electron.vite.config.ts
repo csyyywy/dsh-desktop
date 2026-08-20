@@ -13,7 +13,17 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        // 两个 preload 入口：主窗口（index，暴露 window.dsh）与 dsh Web UI 窗口
+        // （main-window-preload，仅暴露最小恢复 API + 错误卡注入）
+        input: {
+          index: resolve('src/preload/index.ts'),
+          'main-window-preload': resolve('src/preload/main-window-preload.ts')
+        }
+      }
+    }
   },
   renderer: {
     resolve: {

@@ -57,6 +57,7 @@ export default function SettingsPanel() {
               onChange={(e) => set({ port: Number(e.target.value) || 3080 })}
               className={inputCls}
             />
+            <p className="mt-1 text-xs text-slate-500">端口被占用时自动释放本应用残留进程；被其他程序占用则自动切换并保存（见「状态」提示）。</p>
           </Field>
           <Field label="WSL 端口（WSL 模式专用，独立于本机端口）">
             <input

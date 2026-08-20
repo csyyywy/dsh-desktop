@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "DeepSeek Harness 桌面封装 —— 本地一键安装 / 启动 / 更新 dsh 的客户端外壳",
   "author": "dsh-desktop",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
     "icon": "node scripts/make-icon.mjs",
     "node:download": "node scripts/download-node.mjs",
     "pnpm:download": "node scripts/download-pnpm.mjs",
@@ -27,7 +28,6 @@
     "pack:dir": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --dir",
     "pack:win": "npm run icon && npm run node:download && npm run pnpm:download && npm run dsh:bundle && npm run build && electron-builder --win"
   },
-  "dependencies": {},
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.2.0",
@@ -42,6 +42,7 @@
     "sharp": "^0.35.3",
     "tailwindcss": "^4.3.3",
     "typescript": "~5.9.3",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "vitest": "^4.1.11"
   }
 }

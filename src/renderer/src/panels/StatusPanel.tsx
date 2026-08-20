@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import type { AppStatus } from '../../../shared/types'
 import { useStatus } from '../hooks'
+import RecoveryActions from '../RecoveryActions'
 import { Button, Card, Header, Info } from '../ui'
 
 type Phase = AppStatus['phase']
@@ -40,6 +41,14 @@ export default function StatusPanel() {
       {status?.error && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
           {status.error}
+        </div>
+      )}
+      {/* v0.3.0：#94/#96/#98 启动失败恢复面（问题插件 + 卸载并重试 + 重置数据） */}
+      {status?.recovery && <RecoveryActions recovery={status.recovery} />}
+      {/* v0.3.0：端口自愈提示 */}
+      {status?.portNote && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          {status.portNote}
         </div>
       )}
       <Card>

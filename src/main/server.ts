@@ -5,19 +5,43 @@
 //    Windows 访问 WSL 内 dsh 的唯一通道是 WSL2 localhost 转发（dsh 仅监听
 //    127.0.0.1，--host 0.0.0.0 被官方拒绝），因此绝不 terminate 发行版。
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import http from 'node:http'
 import { dshBin, diag, resolveRuntime } from './dsh-manager'
 import { dshHome, loadSettings, windowsApiKey } from './settings'
 import { pushLog } from './log'
+import { applyPortResolution, currentPortNote, resolvePortWithSelfHeal } from './port-util'
 import {
-  bashQuote, checkLocalhostForwarding, checkWinPortFree, currentDistro, hasSetsid,
-  pidAlive, readPidfile, runWslBash,
-  wslDshBinLinux, wslDshBinWindows, wslDshHomeLinux, wslLogfileLinux, wslNodeBin, wslPidfileLinux, wslWorkspaceLinux
+  bashQuote, checkLocalhostForwarding, currentDistro, hasSetsid, pidAlive, readPidfile, runWslBash,
+  toUnc, wslDshBinLinux, wslDshBinWindows, wslDshHomeLinux, wslLogfileLinux, wslNodeBin, wslPidfileLinux, wslWorkspaceLinux
 } from './wsl'
 
 let proc: ChildProcess | null = null
 let lastExit: { code: number | null; signal: string | null } | null = null
+
+// 最近一次启动尝试的 dsh stderr（v0.3.0）：供插件冲突恢复检测（plugin-recovery）
+// 解析「Failed to load plugins / duplicate loader entry / duplicate prefix route」等模式。
+// 每次 start 重置；本机直接捕获子进程 stderr；WSL 失败时读发行版内日志尾部。
+let lastStartupStderr: string[] = []
+const MAX_STARTUP_STDERR = 2000
+function appendStartupStderr(text: string): void {
+  for (const raw of text.split(/\r?\n/)) {
+    const l = raw.replace(/\r$/, '')
+    if (!l) continue
+    lastStartupStderr.push(l)
+    if (lastStartupStderr.length > MAX_STARTUP_STDERR) {
+      lastStartupStderr.splice(0, lastStartupStderr.length - MAX_STARTUP_STDERR)
+    }
+  }
+}
+export function getLastStartupStderr(): string[] {
+  return [...lastStartupStderr]
+}
+
+/** 端口自愈提示（供 buildStatus 的 portNote） */
+export function getPortNote(): string | null {
+  return currentPortNote
+}
 
 /**
  * 解析 dsh 工作目录（spawn 的 cwd）。
@@ -150,19 +174,31 @@ function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean | Pr
 
 // ---------- WSL 后端 ----------
 
-/** WSL 启动前置检查：setsid 可用 / Windows 侧端口空闲 / localhost 转发开启 */
-async function preflightWsl(port: number): Promise<string | null> {
+/** WSL 启动前置检查：setsid 可用 / localhost 转发开启（端口自愈已独立处理） */
+async function preflightWsl(): Promise<string | null> {
   if (!(await hasSetsid())) {
     return '发行版缺少 setsid（util-linux），请先运行: sudo apt install util-linux'
-  }
-  if (!(await checkWinPortFree(port))) {
-    return `Windows 侧 ${port} 端口已被占用，请关闭占用进程或更换端口`
   }
   const lf = checkLocalhostForwarding()
   if (!lf.enabled) {
     return `检测到 .wslconfig 关闭了 localhost 转发（WSL 后端唯一访问通道）。请将 ${lf.configPath} 中的 localhostForwarding 改为 true 或删除该行`
   }
   return null
+}
+
+/** WSL 失败时读发行版内 dsh 日志尾部，供冲突恢复检测（UNC 读，失败容错） */
+function captureWslLogTail(): string[] {
+  try {
+    const p = wslLogfileLinux()
+    const d = currentDistro()
+    if (!p || !d) return []
+    const unc = toUnc(d, p)
+    if (!existsSync(unc)) return []
+    const text = readFileSync(unc, 'utf8')
+    return text.split(/\r?\n/).slice(-MAX_STARTUP_STDERR)
+  } catch {
+    return []
+  }
 }
 
 /** 按 pidfile（<pid> <pgid>）杀 WSL 内 dsh 进程：优先进程组，再单 pid 兜底 */
@@ -189,9 +225,12 @@ async function startWslServer(): Promise<void> {
   const binWin = wslDshBinWindows()
   if (!binWin || !existsSync(binWin)) throw new Error('WSL 内 dsh 未安装，请先在仪表盘部署')
   // WSL 独立端口（settings.wslPort，默认 3081）——与 Windows 侧 port 隔离，
-  // 避免与本机 dsh/旧版应用冲突导致状态误判与 localhost 转发混淆
-  const port = settings.wslPort || 3081
-  const err = await preflightWsl(port)
+  // 避免与本机 dsh/旧版应用冲突导致状态误判与 localhost 转发混淆。
+  // v0.3.0 端口自愈：先释放本应用残留进程占用的 Windows 侧端口；被其他程序占用则
+  // 自动切换并持久化 wslPort（localhost 转发同号映射，WSL 内 dsh 用同一端口启动）。
+  const portRes = await resolvePortWithSelfHeal(settings.wslPort || 3081, { isWsl: true, releaseOwn: forceCleanupWsl })
+  const port = applyPortResolution(portRes, true)
+  const err = await preflightWsl()
   if (err) throw new Error(err)
   // 工作区：与会话 cwd 适配共用同一解析（settings.workspace 或 wslHome）
   const ws = wslWorkspaceLinux()
@@ -235,7 +274,8 @@ async function startWslServer(): Promise<void> {
     wslRunning = false
     wslPidCache = null
     // B6：启动失败要清理刚拉起的 dsh 进程——否则孤儿进程占端口 + pidfile 残留，
-    // 下次启动 preflight 报「端口已被占用」死锁，只能手动强制清理
+    // 下次启动端口自愈/清理会兜住，但仍主动清一次
+    lastStartupStderr = captureWslLogTail()
     pushLog('WSL dsh 启动探测失败，清理刚启动的进程')
     await killByPidfile(pidfile)
     throw e
@@ -291,13 +331,16 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
   const settings = loadSettings()
   if (!existsSync(dshBin())) throw new Error('dsh 尚未安装，请先在仪表盘中安装')
   const rt = resolveRuntime()
-  const port = settings.port || 3080
+  // v0.3.0 端口自愈：空闲直接使用；被本应用残留 dsh 占用 → 释放；被其他程序占用 → 自动切换并持久化
+  lastStartupStderr = []
+  const res = await resolvePortWithSelfHeal(settings.port || 3080, { isWsl: false })
+  const port = applyPortResolution(res, false)
   const workspace = resolveWorkspace(settings.workspace || process.env.USERPROFILE || process.cwd())
   const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: dshHome() }
   if (settings.apiKey) env.DEEPSEEK_API_KEY = settings.apiKey
 
   pushLog(`启动 dsh: ${dshBin()} --profile web --port ${port}`)
-  diag(`startServer: spawning node=${rt.node} label=${rt.label} dshBin=${dshBin()} cwd=${workspace} backend=${loadSettings().backend}`)
+  diag(`startServer: spawning node=${rt.node} label=${rt.label} dshBin=${dshBin()} cwd=${workspace} backend=${loadSettings().backend} port=${port}`)
   proc = spawn(rt.node, [dshBin(), '--profile', 'web', '--port', String(port)], {
     cwd: workspace,
     env,
@@ -319,11 +362,16 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
     const err = e as NodeJS.ErrnoException
     diag(`SPAWN ERROR: node=${rt.node} cwd=${workspace} code=${err.code} errno=${err.errno} syscall=${err.syscall} path=${err.path} message=${err.message}`)
     pushLog(`dsh 进程启动失败: ${err.message}（code=${err.code ?? '?'}）`)
+    appendStartupStderr(`dsh 进程启动失败: ${err.message}`)
     settle(-1)
   })
   lastExit = null
   proc.stdout?.on('data', (b) => pushLog(b.toString()))
-  proc.stderr?.on('data', (b) => pushLog(b.toString()))
+  proc.stderr?.on('data', (b) => {
+    const text = b.toString()
+    pushLog(text)
+    appendStartupStderr(text)
+  })
   // 管道中断（EPIPE/ECONNRESET，如被 taskkill 强杀）若无监听会抛 uncaughtException；忽略即可，判定靠 close
   proc.stdout?.on('error', () => { /* ignore stream error */ })
   proc.stderr?.on('error', () => { /* ignore stream error */ })

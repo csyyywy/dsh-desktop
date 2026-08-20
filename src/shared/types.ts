@@ -62,6 +62,10 @@ export interface PluginUpdateInfo {
 export interface PluginOpResult {
   ok: boolean
   message: string
+  /** 安装前预检检测到的冲突明细（v0.3.0：先检测再安装） */
+  conflicts?: string[]
+  /** 安装前预检的提示（非阻断） */
+  warnings?: string[]
 }
 
 export type ServerPhase = 'stopped' | 'installing' | 'starting' | 'running' | 'error'
@@ -87,6 +91,38 @@ export interface AppStatus {
   wslReady: boolean
   /** WSL 内 dsh 残留进程 pid（无法自动清理时） */
   stalePid: number | null
+  /** 端口自愈提示（v0.3.0：如"端口 3080 被占用，已自动切换到 3085"） */
+  portNote: string | null
+  /** 启动失败时的插件冲突恢复信息（v0.3.0：#81/#94/#96/#98 移植） */
+  recovery: PluginRecoveryInfo | null
+}
+
+/** 可执行的恢复目标（问题插件） */
+export interface PluginRecoveryTarget {
+  /** 真实 npm 包名（可执行卸载；内部标识无法映射时为 null） */
+  name: string | null
+  /** 界面展示名（内部标识时用友好名） */
+  displayName: string
+  /** 冲突/失败原因 */
+  reason: string
+}
+
+/** 启动失败恢复信息（v0.3.0） */
+export interface PluginRecoveryInfo {
+  /** 可卸载的目标；为空表示无法定位到可卸载插件（仍提供重置数据） */
+  offending: PluginRecoveryTarget[]
+  /** 失败原因摘要（面向用户） */
+  message: string
+  /** 是否提供「重置数据」恢复选项 */
+  canReset: boolean
+}
+
+/** 手动备份存档（v0.3.0，独立界面） */
+export interface ManualBackupInfo {
+  /** 存档文件名（含扩展名，用于回退/删除） */
+  name: string
+  size: number
+  createdAt: number
 }
 
 export interface InstallProgress {
@@ -147,6 +183,8 @@ export interface DshApi {
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   installPlugin(name: string, source?: string): Promise<PluginOpResult>
+  /** 安装前冲突预检（v0.3.0：先检测再安装） */
+  preflightPlugin(name: string, source?: string): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
   /** 检查所有已安装插件的可用更新（npm 包查 registry latest；git 依赖查远端 HEAD） */
   checkPluginUpdates(): Promise<PluginUpdateInfo[]>
@@ -157,6 +195,14 @@ export interface DshApi {
   listBackups(): Promise<string[]>
   restoreBackup(name: string): Promise<PluginOpResult>
   deleteBackup(name: string): Promise<PluginOpResult>
+  // ---------- v0.3.0：备份独立界面 + 手动存档 ----------
+  backupCreateManual(label?: string): Promise<PluginOpResult>
+  backupListManual(): Promise<ManualBackupInfo[]>
+  backupRestoreManual(name: string): Promise<PluginOpResult>
+  backupDeleteManual(name: string): Promise<PluginOpResult>
+  // ---------- v0.3.0：启动失败恢复 ----------
+  recoveryUninstallRetry(name: string): Promise<PluginOpResult>
+  recoveryResetData(): Promise<PluginOpResult>
   quit(): Promise<void>
   onStatusChanged(cb: (s: AppStatus) => void): () => void
   onLogLine(cb: (line: string) => void): () => void

@@ -21,6 +21,7 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('app:installUpdate', () => controller.installAppUpdate())
   ipcMain.handle('plugins:list', () => controller.listPlugins())
   ipcMain.handle('plugins:search', (_e, query: string, sort?: string, source?: string) => controller.searchPlugins(query, sort, source))
+  ipcMain.handle('plugins:preflight', (_e, name: string, source?: string) => controller.preflightPlugin(name, source))
   ipcMain.handle('plugins:install', (_e, name: string, source?: string) => controller.installPlugin(name, source))
   ipcMain.handle('plugins:uninstall', (_e, name: string) => controller.uninstallPlugin(name))
   ipcMain.handle('plugins:checkUpdates', () => controller.checkPluginUpdates())
@@ -30,6 +31,15 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('plugins:backups', () => controller.listBackups())
   ipcMain.handle('plugins:restoreBackup', (_e, name: string) => controller.restoreBackup(name))
   ipcMain.handle('plugins:deleteBackup', (_e, name: string) => controller.deleteBackup(name))
+  // v0.3.0：备份独立界面 + 手动存档
+  ipcMain.handle('backup:createManual', (_e, label?: string) => controller.backupCreateManual(label))
+  ipcMain.handle('backup:listManual', () => controller.backupListManual())
+  ipcMain.handle('backup:restoreManual', (_e, name: string) => controller.backupRestoreManual(name))
+  ipcMain.handle('backup:deleteManual', (_e, name: string) => controller.backupDeleteManual(name))
+  // v0.3.0：启动失败恢复
+  ipcMain.handle('recovery:uninstallRetry', (_e, name: string) => controller.recoveryUninstallRetry(name))
+  ipcMain.handle('recovery:resetData', () => controller.recoveryResetData())
+  ipcMain.handle('recovery:restart', () => controller.recoveryRestart())
   // v0.2.0：WSL 后端
   ipcMain.handle('backend:info', () => controller.backendInfo())
   ipcMain.handle('backend:setMode', (_e, mode: 'local' | 'wsl') => controller.backendSetMode(mode))

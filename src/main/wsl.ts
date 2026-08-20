@@ -12,13 +12,32 @@ import { spawn } from 'node:child_process'
 import { connect } from 'node:net'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadSettings } from './settings'
+import { loadSettings, dshHome } from './settings'
 import { pushLog } from './log'
 import type { WslDistroInfo } from '../shared/types'
 
 /** 可部署的发行版名白名单：官方 Store 发行版均符合；含空格/特殊字符的
  *  （wsl --import 自定义名）只展示不可部署 */
 export const VALID_DISTRO_RE = /^[A-Za-z0-9._-]+$/
+
+const PROFILE = 'web'
+
+/** profile 目录（v0.3.0 移入 wsl.ts 供 plugin-manager / backup-manager 共用，避免循环依赖）：
+ *  WSL 模式 = UNC（Windows 侧 fs 用），本机 = Windows 路径 */
+export function profileDir(): string {
+  if (loadSettings().backend === 'wsl') {
+    const d = currentDistro()
+    const l = profileLinuxDir()
+    return d && l ? toUnc(d, l) : join(dshHome(), 'profiles', PROFILE)
+  }
+  return join(dshHome(), 'profiles', PROFILE)
+}
+
+/** profile 目录（发行版内 Linux 路径，仅供 wsl.exe 命令） */
+export function profileLinuxDir(): string | null {
+  const home = wslDshHomeLinux()
+  return home ? `${home}/profiles/${PROFILE}` : null
+}
 
 // ---------- 基本执行 ----------
 

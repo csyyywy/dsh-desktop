@@ -93,6 +93,23 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
   - **关键约束**：pnpm 必须 `hoisted`，isolated 布局的 symlink 会被 `restoreBundledDsh` 的 cpSync 复制失效。
 - **本机构建产物（2026-08-21）**：`dist/DeepSeek Harness-0.2.2-setup.exe` / `-portable.exe` / `win-unpacked/`（内置 dsh **0.1.0-rc.8**、Node v22.21.1、pnpm 11.21.0，均经校验）。winCodeSign-2.6.0 已预下载到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign-2.6.0`。
 
+**v0.3.0（稳定性修复批次，2026-08-21 起）**：版本 0.2.2 → 0.3.0。新增 `npm run test`（vitest，纯函数单测）。
+- **端口自愈（`src/main/port-util.ts`）**：启动前 `resolvePortWithSelfHeal` —— 空闲直用；被**本应用残留 dsh**（命令行含本应用 dataDir + `@deepseek-ai/dsh`）占用 → taskkill/forceCleanupWsl 释放；被其他程序占用 → **自动切换端口并 `saveSettings` 持久化**（preferred+1 逐跳，+25 上限），`AppStatus.portNote` 提示。local/WSL 双路接入（`server.ts`），WSL 替换原 `preflightWsl` 的"端口被占直接报错"。**绝不杀非本应用进程**。
+- **插件搜索修复（`plugin-manager.ts`）**：npm/GitHub 双源加**后置相关性过滤 + 排序**（name 精确>前缀>子串>keyword>description，无关一律丢弃）；npm 严格结果 <5 时用 `keywords:<q>` 兜底；GitHub 查询限定 `in:name,description,topics`。
+- **插件安装冲突预检（`plugin-manager.ts` 的 `preflightPluginInstall`，IPC `plugins:preflight`）**：同名已装 + 候选 `dsh.bundle.patch` 注册标识与已装重叠 → conflict；UI（PluginsPanel）安装前先弹报告、用户确认才装；拿不到候选元数据降级为 warning。
+- **备份独立界面 + 手动存档（`src/main/backup-manager.ts` 新建，`src/renderer/src/panels/BackupPanel.tsx`）**：
+  - 自动快照（install/uninstall/update 前 profile 快照）从 plugin-manager 平移到 backup-manager（`backupProfile/listBackups/restoreBackup/deleteBackup/pruneBackups`），plugin-manager 改 import；`profileDir/profileLinuxDir` 移入 `wsl.ts`（**避免 plugin-manager↔backup-manager 循环依赖**）。
+  - 手动存档：本机系统 `tar -a` 打包整个 `dshHome()` → `dataDir/backups/manual/<ts>-<label>.zip`；WSL 发行版内 `tar czf`（`.tar.gz`）。恢复 = 安全快照当前 dshHome → staging 解包 → 原子交换。标签白名单 `^[0-9A-Za-z_-]{0,40}$`，保留最近 10 份。
+  - `resetHarnessData()`（本地/WSL 双路）：备份 dshHome → `backups/reset/<ts>` → 重建空目录（#81）。
+- **启动失败恢复（#81/#94/#96/#98，移植自 dataelement/dsh-desktop v0.4.0）**：
+  - `src/main/plugin-recovery-detection.ts`（**零依赖纯函数**，vitest 覆盖）：`extractFailureCause` / `extractOffendingPlugins`（含「Failed to load plugins」**跨行**错误卡清单）/ `extractDuplicateLoaderEntryId` / `extractSlotConflictName`（含 `duplicate prefix route`）；`isActionablePluginReference` 过滤核心 bundle 与 `@deepseek-ai/*`。
+  - `src/main/plugin-recovery.ts`：把 loader 条目 id/插槽名**按 profile bundle 顺序映射回真实包**（读各包 `dsh.bundle.patch` 文件内容，词边界匹配，要求包同时在 deps 与 bundles，#98）；内部标识（`cordis:include`）不提供误导性卸载入口。
+  - `server.ts`：`lastStartupStderr` 捕获（本机子进程 stderr / WSL 失败读发行版日志尾部），`getLastStartupStderr()`；`getPortNote()`。
+  - `index.ts`：startDsh/restart 失败 → `detectPluginRecovery` → `AppStatus.recovery`；稳定健康窗口 500ms（#96）；`recoveryPending` 时 `openMain/reloadMain` **不导航**到破损 URL（守卫）；controller 增 `recoveryUninstallRetry / recoveryResetData / recoveryRestart`（全部 `serializeLifecycle`）。
+  - `src/preload/main-window-preload.ts`（**第二个 preload 入口**，electron.vite.config.ts 的 preload 改多入口 rollupOptions）：主窗口（dsh Web UI）只暴露最小 `window.__dshRecovery`，MutationObserver 检测「Failed to load plugins」全屏错误卡 → 注入「重启 Harness」按钮（#94/#96）。
+  - `src/renderer/src/RecoveryActions.tsx`：Splash + StatusPanel 复用的问题插件列表 + 卸载并重试/重置数据/重试启动。
+- **协议核查**：dataelement/dsh-desktop 与 zat-dsh-engine 均为 MIT，可移植；`THIRD-PARTY-NOTICES.md` 致谢（README 加链接）。LICENSE 保持 MIT。
+
 ---
 
 ## 3. 本机环境（接手者必须知道）
