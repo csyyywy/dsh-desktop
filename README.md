@@ -16,6 +16,8 @@
 - 仪表盘：状态 / 设置（端口、工作区、API Key、版本、开机自启、**自定义背景**）/ 更新（一键升级 + 历史版本回滚）/ 日志 / **插件管理器** / **备份与回退**（独立面板，手动存档 + 自动快照）。
 - **插件管理器**：浏览/搜索官方插件仓库（GitHub topic `dsh-plugin` / npm `dsh-plugin`，相关性过滤排序），一键安装（git 安装）/卸载；**安装前冲突预检**（同名/重复注册先报告）；内置 pnpm 离线可用；每次安装/卸载前自动备份。
 - **端口自愈**：端口被本应用残留进程占用时自动释放；被其他程序占用时自动切换并保存。
+- **WSL 后端**（可选）：一键部署发行版内运行环境，dsh 跑在 WSL 里、窗口仍在本机；「从本机同步」迁移配置/插件/会话。
+- **文件桥**：Windows ↔ WSL 双向文件浏览/复制/移动/重命名/删除与路径转换。
 - **启动失败恢复**：自动识别问题插件 → 一键「卸载并重试」；支持「重置数据」（备份后重建）；内部加载器故障也能映射回真实插件包。
 
 ## 目录结构
@@ -37,6 +39,7 @@ dsh-desktop/
 npm install       # 依赖（Electron 等；国内网络走 npmmirror，见 .npmrc）
 npm run dev       # electron-vite 开发模式
 npm run typecheck
+npm test          # vitest 单元测试
 ```
 
 ## 打包
@@ -50,8 +53,10 @@ npm run pack:win  # 产出 dist/ 下的三种形态
 | 文件 | 说明 |
 |---|---|
 | `dist/win-unpacked/` | 免安装绿色版文件夹（解压即用） |
-| `dist/DeepSeek Harness-<ver>-setup.exe` | NSIS 安装器（开始菜单/桌面快捷方式/卸载） |
-| `dist/DeepSeek Harness-<ver>-portable.exe` | 单文件便携版 |
+| `dist/DeepSeek-Harness-<ver>-setup.exe` | NSIS 安装器（开始菜单/桌面快捷方式/卸载） |
+| `dist/DeepSeek-Harness-<ver>-portable.exe` | 单文件便携版 |
+
+发布时另打绿色 zip：`tar -a -c -f dist/DeepSeek-Harness-<ver>-portable-win-x64.zip -C dist/win-unpacked .`（顶层即文件本体）。
 
 > 首次打包需下载 Electron 与便携 Node，耗时较长；国内网络下 `.npmrc` 与 `pack` 脚本已配置 npmmirror 镜像。
 

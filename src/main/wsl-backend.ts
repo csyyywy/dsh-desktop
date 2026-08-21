@@ -186,13 +186,20 @@ export async function ensureWslGithubAccess(distro: string, allowUac = false): P
     if (!allowUac) {
       return { ok: false, message: 'WSL 内 GitHub 不可达（本机 hosts 劫持），自动同步跳过插件依赖重建；可在「从本机同步」时授权 UAC 打通' }
     }
-    // 配置 portproxy + 防火墙（UAC 一次，幂等：先 delete 忽略错误再 add）
+    // 配置 portproxy + 防火墙（UAC 一次，幂等：先 delete 忽略错误再 add）。
+    // 安全：listenaddress 绑定 WSL 网关 IP（而非 0.0.0.0，不对局域网/公网开放），
+    // 防火墙规则限定 localsubnet；winIp 来自 WSL ip route 输出，插值前必须校验格式
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(winIp)) {
+      return { ok: false, message: 'Windows 宿主 IP 格式异常（' + winIp + '），跳过端口转发配置' }
+    }
     const netshScript =
-      "netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=443 2>$null; " +
-      'netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=443 connectaddress=127.0.0.1 connectport=443; ' +
+      // 顺带清理旧版本遗留的 0.0.0.0 全接口转发（历史暴露面）
+      'netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=443 2>$null; ' +
+      `netsh interface portproxy delete v4tov4 listenaddress=${winIp} listenport=443 2>$null; ` +
+      `netsh interface portproxy add v4tov4 listenaddress=${winIp} listenport=443 connectaddress=127.0.0.1 connectport=443; ` +
       "netsh advfirewall firewall delete rule name='dsh-wsl-gh443' 2>$null; " +
-      "netsh advfirewall firewall add rule name='dsh-wsl-gh443' dir=in action=allow protocol=TCP localport=443"
-    pushLog('WSL 内 GitHub 不可达（本机 hosts 劫持 127.0.0.1），请求提权配置 0.0.0.0:443 → 127.0.0.1:443 转发（请在弹出的 UAC 中允许）')
+      "netsh advfirewall firewall add rule name='dsh-wsl-gh443' dir=in action=allow protocol=TCP localport=443 remoteip=localsubnet"
+    pushLog(`WSL 内 GitHub 不可达（本机 hosts 劫持 127.0.0.1），请求提权配置 ${winIp}:443 → 127.0.0.1:443 转发（仅 WSL 网关可达，请在弹出的 UAC 中允许）`)
     try {
       const psCmd = `Start-Process powershell -ArgumentList '-NoProfile','-Command',${JSON.stringify(netshScript)} -Verb RunAs -Wait`
       await new Promise<void>((resolve) => {

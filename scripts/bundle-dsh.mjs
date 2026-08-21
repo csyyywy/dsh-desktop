@@ -23,7 +23,10 @@ import { spawnSync } from 'node:child_process'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const destDir = join(root, 'resources', 'dsh-bundle')
-const version = process.env.DSH_BUNDLE_VERSION || 'latest'
+// 固化默认版本（与 release notes 声称的内置版本一致）：`latest` 会让同一提交
+// 在不同时间打出不同产物，破坏可复现构建。升级内置版本时显式传 DSH_BUNDLE_VERSION。
+const DEFAULT_DSH_VERSION = '0.1.0-rc.8'
+const version = process.env.DSH_BUNDLE_VERSION || DEFAULT_DSH_VERSION
 const nodeExe = join(root, 'resources', 'node', 'node.exe')
 const pnpmCjs = join(root, 'resources', 'pnpm', 'bin', 'pnpm.cjs')
 // 持久 store：放 node_modules 下（gitignore、不打进应用、跨构建复用）

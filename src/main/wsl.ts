@@ -93,7 +93,8 @@ function spawnWsl(
       const stdout = decode(Buffer.concat(out))
       const stderr = decode(Buffer.concat(err))
       if (!opts.silent) {
-        pushLog(`$ wsl ${argv.join(' ')}`)
+        // 脱敏：启动脚本可能内联 DEEPSEEK_API_KEY，绝不能原样进日志（logs:get 会回传渲染层）
+        pushLog(`$ wsl ${argv.join(' ').replace(/DEEPSEEK_API_KEY=[^\s]*/g, 'DEEPSEEK_API_KEY=***')}`)
         const tail = (stdout + '\n' + stderr).trim().split('\n').slice(-5).join(' | ')
         if (tail) pushLog('  ↳ ' + tail.slice(0, 2000))
       }

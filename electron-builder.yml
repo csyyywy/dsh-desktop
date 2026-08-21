@@ -7,7 +7,6 @@ directories:
 
 files:
   - out/**
-  - resources/icons/**
 
 extraResources:
   - from: resources
@@ -35,10 +34,11 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: DeepSeek Harness
-  artifactName: ${productName}-${version}-setup.${ext}
+  # 连字符命名：与 latest.yml 的 url 一致，免去「上传前手工改名」环节（空格名会被 GitHub 转成点号）
+  artifactName: DeepSeek-Harness-${version}-setup.${ext}
 
 portable:
-  artifactName: ${productName}-${version}-portable.${ext}
+  artifactName: DeepSeek-Harness-${version}-portable.${ext}
 
 # 应用自更新走 GitHub Releases：构建时生成 latest.yml / app-update.yml（升级信息），
 # 发布时把 latest.yml 一并传上 Release；应用内更新面板直接调 GitHub API + curl 下载安装包。

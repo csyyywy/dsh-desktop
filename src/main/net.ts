@@ -5,8 +5,10 @@ import { spawn } from 'node:child_process'
 export function curlJson(url: string, headers: Record<string, string> = {}, maxTime = 25): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const args = ['-sS', '-L', '--max-time', String(maxTime)]
+    // 头名/头值净化换行：CRLF 可向 curl 注入额外 HTTP 头（如 token 含换行时）
+    const clean = (s: string): string => s.replace(/[\r\n]+/g, ' ')
     for (const [k, v] of Object.entries(headers)) {
-      if (v) args.push('-H', `${k}: ${v}`)
+      if (v) args.push('-H', `${clean(k)}: ${clean(v)}`)
     }
     args.push(url)
     const child = spawn('curl', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })

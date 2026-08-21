@@ -109,6 +109,42 @@ async function wslAliveCheck(): Promise<boolean> {
   return pidAlive(wslPidCache)
 }
 
+// WSL 运行期看门狗：启动成功后 wslRunning 只是缓存值，发行版内进程崩溃后
+// 状态会永远显示 running（本机有 proc exit 事件，WSL 没有）。每 15s 按 pidfile
+// pid 做 kill -0 复检，发现崩溃即翻转状态并触发 onExit 回调（phase=error 广播）。
+let wslWatchdog: ReturnType<typeof setInterval> | null = null
+let wslOnExitCb: ((code: number | null) => void) | null = null
+
+function stopWslWatchdogTimer(): void {
+  if (wslWatchdog) {
+    clearInterval(wslWatchdog)
+    wslWatchdog = null
+  }
+}
+
+function clearWslExitWatch(): void {
+  stopWslWatchdogTimer()
+  wslOnExitCb = null
+}
+
+function startWslWatchdog(): void {
+  stopWslWatchdogTimer()
+  wslWatchdog = setInterval(() => {
+    void (async () => {
+      if (!wslRunning || wslPidCache == null) return
+      if (!(await pidAlive(wslPidCache))) {
+        wslRunning = false
+        wslPidCache = null
+        stopWslWatchdogTimer()
+        pushLog('WSL dsh 进程已退出（运行期看门狗检测）')
+        const cb = wslOnExitCb
+        wslOnExitCb = null
+        cb?.(1)
+      }
+    })()
+  }, 15000)
+}
+
 function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean | Promise<boolean> = isRunning, verifyDsh = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now()
@@ -211,8 +247,10 @@ async function killByPidfile(pidfile: string): Promise<void> {
   await runWslBash(cmds.join('; '), { silent: true })
 }
 
-async function startWslServer(): Promise<void> {
+async function startWslServer(onExit?: (code: number | null) => void): Promise<void> {
   if (wslRunning) return
+  // 任何一步失败都不应使用上一次启动的陈旧 stderr 做恢复归因
+  lastStartupStderr = []
   const settings = loadSettings()
   const distro = currentDistro()
   if (!distro) throw new Error('未配置 WSL 发行版，请先在仪表盘「运行后端」面板部署')
@@ -280,9 +318,12 @@ async function startWslServer(): Promise<void> {
     await killByPidfile(pidfile)
     throw e
   }
+  wslOnExitCb = onExit ?? null
+  startWslWatchdog()
 }
 
 async function stopWslServer(): Promise<void> {
+  clearWslExitWatch()
   const pidfile = wslPidfileLinux()
   if (!pidfile) return
   const info = await readPidfile(pidfile)
@@ -324,15 +365,16 @@ export async function forceCleanupWsl(): Promise<boolean> {
 
 export async function startServer(onExit?: (code: number | null) => void): Promise<void> {
   if (loadSettings().backend === 'wsl') {
-    await startWslServer()
+    await startWslServer(onExit)
     return
   }
   if (isRunning()) return
+  // 尽早重置：dshBin 缺失等早期抛错也不得沿用上次的陈旧 stderr 做恢复归因
+  lastStartupStderr = []
   const settings = loadSettings()
   if (!existsSync(dshBin())) throw new Error('dsh 尚未安装，请先在仪表盘中安装')
   const rt = resolveRuntime()
   // v0.3.0 端口自愈：空闲直接使用；被本应用残留 dsh 占用 → 释放；被其他程序占用 → 自动切换并持久化
-  lastStartupStderr = []
   const res = await resolvePortWithSelfHeal(settings.port || 3080, { isWsl: false })
   const port = applyPortResolution(res, false)
   const workspace = resolveWorkspace(settings.workspace || process.env.USERPROFILE || process.cwd())

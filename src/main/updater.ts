@@ -115,6 +115,22 @@ function sha256File(path: string): Promise<string> {
   })
 }
 
+/** 下载 URL 域白名单：只允许 GitHub 官方域（api 响应若被篡改指向第三方主机则拒绝下载） */
+function isTrustedDownloadUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'https:') return false
+    return (
+      u.hostname === 'github.com' ||
+      u.hostname === 'objects.githubusercontent.com' ||
+      u.hostname === 'release-assets.githubusercontent.com' ||
+      u.hostname.endsWith('.githubusercontent.com')
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * 下载最新版 setup.exe 到数据目录。
  * onProgress 回调下载/校验进度；成功时 path 为本地安装包完整路径。
@@ -134,6 +150,11 @@ export function downloadAppUpdate(
         if (!info.enabled || !info.assetUrl || !info.latest) {
           downloading = false
           resolve({ ok: false, message: '未配置更新仓库或该版本没有附带安装包' })
+          return
+        }
+        if (!isTrustedDownloadUrl(info.assetUrl)) {
+          downloading = false
+          resolve({ ok: false, message: '下载地址不是受信任的 GitHub 域，已中止（请检查更新仓库设置）' })
           return
         }
         if (!info.hasUpdate) {

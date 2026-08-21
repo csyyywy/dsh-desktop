@@ -2,7 +2,16 @@
 
 > 本文档供接续开发者 / agent 接手 **dsh-desktop** 项目使用。
 > 记录了项目现状、本机环境、关键机制与踩过的坑。
-> 最后更新：2026-08-15（v0.1.4 发布后）。
+> 最后更新：2026-08-21（v0.3.0 审查修复批次后）。
+
+## 0. 审查修复批次（2026-08-21，v0.3.1 前置）
+
+四路并行审查（主进程/安全/打包合规/渲染层）后集中修复，要点：
+
+- **备份数据安全**：WSL 手动恢复/重置脚本改 `set -e` + if 守卫（旧 `;` 链在 mv 失败后仍会删原环境）；本机恢复换入失败自动回滚；自动备份成功判定落到 package.json 存在，失败清理半成品；恢复前先快照当前环境；tar 解包前条目预检（防 zip-slip）；备份/快照排除 `.credentials.yaml*`（明文密钥不入归档）。
+- **生命周期**：install/update 先停服再装（本地 EPERM / WSL 新版本不生效）；boot/openMain 纳入串行队列；本机回退也停服；启动 stderr 尽早重置；恢复成功置 webUIStale 强制重导航；本地 pnpm/npm 加超时；WSL 运行期看门狗（15s kill -0 复检，崩溃翻转为 error 态）。
+- **安全加固**：runNpm 移除 shell:true（系统回退解析 npm-cli.js 绝对路径）；dsh 版本号白名单；插件名/spec 白名单（防 pnpm 旗标注入）；recovery:uninstallRetry 白名单=当前恢复清单且 preload 不再暴露该通道；fsbOpen win 侧补路径校验；curl 头 CRLF 净化；更新下载域白名单；WSL 启动日志脱敏 API Key；portproxy 改绑 WSL 网关 IP + 防火墙限 localsubnet（并清理旧 0.0.0.0 映射）；settings:set 运行中禁改 backend/distro/home + 端口范围校验；三窗口 will-navigate/will-redirect 守卫。
+- **构建发布**：产物改连字符命名（与 latest.yml 一致，免手工改名）；asar files 去掉冗余 icons；THIRD-PARTY-NOTICES 补 react/react-dom/tailwindcss 与内置运行时清单；新增 GitHub Actions CI（typecheck+test）；bundle-dsh 默认版本固化为 0.1.0-rc.8；download-node 校验 SHASUMS256、download-pnpm 校验 registry integrity。
 
 ---
 

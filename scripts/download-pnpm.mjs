@@ -2,7 +2,8 @@
 // pnpm 的 bin/pnpm.cjs 只是 shim，真实入口是 dist/pnpm.mjs（13MB bundle）+ dist/node_modules，
 // 因此需要复制整个 package 目录。已存在则跳过。
 // 下载统一走系统 curl：Node 的 fetch 在带自定义 CA 的代理环境下会 TLS 校验失败。
-import { existsSync, mkdirSync, writeFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, renameSync, rmSync, statSync, createReadStream } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -44,6 +45,37 @@ async function main() {
   const tgzPath = join(tmpDir, 'pnpm.tgz')
 
   curlDownload(tarballUrl, tgzPath, 'pnpm tarball')
+
+  // 供应链校验：对照 registry 元数据的 dist.integrity（sha512-base64）验证 tarball。
+  // 元数据与 tarball 同走 HTTPS（系统证书库）；拉不到元数据则告警跳过，不匹配即致命
+  const metaPs = spawnSync(
+    'curl',
+    ['-sSL', '--max-time', '60', `https://registry.npmjs.org/pnpm/${PNPM_VERSION}`],
+    { encoding: 'utf8' }
+  )
+  let expectedIntegrity = null
+  try {
+    expectedIntegrity = JSON.parse(metaPs.stdout || '{}')?.dist?.integrity ?? null
+  } catch {
+    /* 元数据解析失败按缺失处理 */
+  }
+  if (!expectedIntegrity || !/^sha512-.+$/.test(expectedIntegrity)) {
+    console.warn('[download-pnpm] 警告：无法获取 registry 完整性元数据，跳过 tarball 校验')
+  } else {
+    const hash = createHash('sha512')
+    const rs = createReadStream(tgzPath)
+    await new Promise((resolve, reject) => {
+      rs.on('data', (c) => hash.update(c))
+      rs.on('end', resolve)
+      rs.on('error', reject)
+    })
+    const actual = hash.digest('base64')
+    const expected = expectedIntegrity.slice('sha512-'.length)
+    if (actual !== expected) {
+      throw new Error(`pnpm tarball SHA512 不匹配！期望 ${expected}，实际 ${actual}（下载可能被篡改，已中止）`)
+    }
+    console.log('[download-pnpm] pnpm tarball SHA512 校验通过')
+  }
 
   const r = spawnSync('tar', ['-xzf', 'pnpm.tgz'], { cwd: tmpDir, encoding: 'utf8' })
   if (r.status !== 0) throw new Error('tar 解压失败: ' + (r.stderr || r.stdout))

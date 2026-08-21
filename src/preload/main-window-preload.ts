@@ -65,9 +65,10 @@ function watchForErrorCard(): void {
   else document.addEventListener('DOMContentLoaded', start, { once: true })
 }
 
+// 只暴露「重启」：卸载通道（recovery:uninstallRetry）不再从此处暴露——
+// dsh Web UI 属可被插件扩展的内容，主进程侧另有恢复清单白名单双重把关
 contextBridge.exposeInMainWorld(RECOVERY_KEY, {
-  restartHarness: () => ipcRenderer.invoke('recovery:restart'),
-  uninstallAndRetry: (name: string) => ipcRenderer.invoke('recovery:uninstallRetry', name)
+  restartHarness: () => ipcRenderer.invoke('recovery:restart')
 })
 
 watchForErrorCard()

@@ -3,7 +3,7 @@
 import { app } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { dataDir, loadSettings } from './settings'
 import { pushLog } from './log'
@@ -186,15 +186,45 @@ export async function listVersions(): Promise<string[]> {
   }
 }
 
-/** 运行 npm（内置 node 直接跑 npm-cli.js；系统回退走 shell） */
-export function runNpm(args: string[], onLine?: (line: string) => void): Promise<number> {
+/** 系统 Node 回退：解析系统 node 的 npm-cli.js 绝对路径。
+ *  绝不走 `npm.cmd` + shell:true——argv 含引号/元字符时在 Windows 上是命令注入面。 */
+function resolveSystemNpmCli(): Promise<{ node: string; npmCli: string } | null> {
+  return new Promise((resolve) => {
+    const child = spawn('where.exe', ['node'], { windowsHide: true })
+    let out = ''
+    child.stdout?.on('data', (b: Buffer) => (out += b.toString()))
+    child.on('error', () => resolve(null))
+    child.on('close', (code) => {
+      if (code !== 0) return resolve(null)
+      const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      const node = lines.find((l) => l.toLowerCase().endsWith('.exe')) ?? lines[0]
+      if (!node || !existsSync(node)) return resolve(null)
+      const npmCli = join(dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      resolve(existsSync(npmCli) ? { node, npmCli } : null)
+    })
+  })
+}
+
+/** 运行 npm（内置 node 直接跑 npm-cli.js；系统回退同样解析出 cli 路径后以 argv 运行） */
+export async function runNpm(args: string[], onLine?: (line: string) => void): Promise<number> {
+  const rt = resolveRuntime()
+  let cmd: string
+  let argv: string[]
+  if (rt.npmCli) {
+    cmd = rt.node
+    argv = [rt.npmCli, ...args]
+  } else if (process.platform === 'win32') {
+    const sys = await resolveSystemNpmCli()
+    if (!sys) throw new Error('未找到可用的 npm（内置运行时缺失且系统 Node 未安装）。请修复内置运行时后重试')
+    cmd = sys.node
+    argv = [sys.npmCli, ...args]
+  } else {
+    cmd = 'npm'
+    argv = args
+  }
+  pushLog(`$ ${cmd} ${argv.join(' ')}`)
   return new Promise((resolve, reject) => {
-    const rt = resolveRuntime()
-    const useShell = rt.npmCli == null && process.platform === 'win32'
-    const cmd = rt.npmCli ? rt.node : useShell ? 'npm.cmd' : 'npm'
-    const argv = rt.npmCli ? [rt.npmCli, ...args] : args
-    pushLog(`$ ${cmd} ${args.join(' ')}`)
-    const child = spawn(cmd, argv, { shell: useShell, windowsHide: true, env: process.env })
+    const child = spawn(cmd, argv, { windowsHide: true, env: process.env })
     const emit = (buf: Buffer): void => {
       for (const l of buf.toString().split(/\r?\n/)) {
         if (l.trim()) {
@@ -255,8 +285,19 @@ export function runPnpmCore(args: string[], onLine?: (line: string) => void): Pr
     child.stderr?.on('data', emit)
     child.stdout?.on('error', () => { /* ignore */ })
     child.stderr?.on('error', () => { /* ignore */ })
-    child.on('error', (e) => resolve({ code: 1, output: e.message }))
-    child.on('close', (code) => resolve({ code: code ?? 1, output: out }))
+    // 超时兜底：挂死的安装会卡死整个生命周期串行队列（install/update/启停全部排队）
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* ignore */ }
+      resolve({ code: 1, output: out + '\npnpm 安装超时（10 分钟），已终止' })
+    }, 10 * 60 * 1000)
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      resolve({ code: 1, output: e.message })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({ code: code ?? 1, output: out })
+    })
   })
 }
 

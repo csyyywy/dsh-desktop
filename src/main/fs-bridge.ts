@@ -327,6 +327,8 @@ export async function translatePath(input: string): Promise<FsTranslateResult> {
 export async function openEntry(side: FsSide, path: string, terminal = false): Promise<PluginOpResult> {
   if (side === 'win') {
     if (terminal) return { ok: false, message: '本机侧不支持「终端打开」' }
+    // 与其他 win 侧操作同规则：必须过路径校验（shell.openPath 可执行/启动任意文件）
+    if (!(path !== '' && validateWinPath(path))) return { ok: false, message: '非法路径' }
     const err = await shell.openPath(path)
     return err ? { ok: false, message: err } : { ok: true, message: '' }
   }

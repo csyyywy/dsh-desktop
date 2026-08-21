@@ -58,6 +58,22 @@ function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
 }
 
 // ---------- 窗口 ----------
+/** 导航守卫：只允许本应用自身页面（file:// / dev server）与本地 dsh 服务地址，
+ *  其余顶层导航/重定向一律拦截——配合 setWindowOpenHandler 堵住「导航到远程内容」 */
+function guardNavigation(win: BrowserWindow): void {
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const allow = (url: string): boolean =>
+    url.startsWith('file://') ||
+    (!!devUrl && url.startsWith(devUrl)) ||
+    url.startsWith('http://127.0.0.1:')
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!allow(url)) e.preventDefault()
+  })
+  win.webContents.on('will-redirect', (e, url) => {
+    if (!allow(url)) e.preventDefault()
+  })
+}
+
 function createSplash(): BrowserWindow {
   const win = new BrowserWindow({
     width: 400,
@@ -73,6 +89,7 @@ function createSplash(): BrowserWindow {
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false }
   })
   loadRenderer(win, { view: 'splash' })
+  guardNavigation(win)
   win.on('closed', () => {
     splashWindow = null
   })
@@ -96,6 +113,7 @@ function createDashboard(): BrowserWindow {
     return { action: 'deny' }
   })
   loadRenderer(win, { view: 'dashboard' })
+  guardNavigation(win)
   win.on('closed', () => {
     dashboardWindow = null
   })
@@ -125,6 +143,7 @@ function createMain(): BrowserWindow {
     }
   })
   void win.loadURL(`http://127.0.0.1:${webPort()}`)
+  guardNavigation(win)
   win.webContents.on('did-finish-load', () => {
     webUIStale = false
   })
@@ -169,8 +188,8 @@ function openMain(): void {
   // WSL 模式没有本机 proc 句柄，isRunning() 恒 false——必须同时看 wslIsRunning()，
   // 否则启动成功后这里会误判"未运行"而递归 startDsh（被互斥锁挡住）→ 主窗口不弹出
   if (!isRunning() && !wslIsRunning()) {
-    // B5：startDsh 已保证不 reject；再加 .catch 兜底防未来改动
-    void startDsh().catch((e) => pushLog(`openMain: 启动失败 ${(e as Error).message}`))
+    // B5：startDsh 已保证不 reject；经串行队列启动，避免与进行中的 stop/install 交错
+    void serializeLifecycle(startDsh).catch((e) => pushLog(`openMain: 启动失败 ${(e as Error).message}`))
     return
   }
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -277,7 +296,18 @@ function onServerExit(code: number | null): void {
   broadcastStatus()
 }
 
+// 版本白名单：IPC dsh:update(version) 与设置里的 dshVersion 都是任意字符串，
+// 拼进 pnpm/npm 安装目标前必须校验（防 `--` 旗标注入与 shell 元字符逃逸）
+const SAFE_VERSION_RE = /^[0-9A-Za-z._-]{1,64}$/
+
 async function doInstall(targetVersion: string): Promise<void> {
+  if (!SAFE_VERSION_RE.test(targetVersion)) {
+    const msg = `非法的 dsh 版本号: ${targetVersion}`
+    phase = 'error'
+    error = msg
+    broadcastStatus()
+    throw new Error(msg)
+  }
   phase = 'installing'
   error = null
   broadcastProgress({ phase: 'installing', message: `正在安装 @deepseek-ai/dsh@${targetVersion} …` })
@@ -403,6 +433,9 @@ async function restartForPluginChange(): Promise<void> {
 async function updateDsh(version?: string): Promise<AppStatus> {
   const target = version ?? resolveDshTarget()
   const wasRunning = isRunning() || wslIsRunning()
+  // 必须先停服再安装：本地不停服会因 Windows 文件锁 EPERM 失败；
+  // WSL 不停服则装完新版本后 startDsh 因「已在运行」直接返回，新版本永不生效
+  if (wasRunning) await stopServer()
   await doInstall(target)
   if (wasRunning) await startDsh()
   return buildStatus()
@@ -410,7 +443,20 @@ async function updateDsh(version?: string): Promise<AppStatus> {
 
 async function applySettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const prev = loadSettings()
-  const next = saveSettings(patch)
+  const filtered: Partial<AppSettings> = { ...patch }
+  // 端口范围校验（sanitizePatch 只查 number 类型，不查范围）
+  const badPort = (v: unknown): boolean => typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 65535
+  if (filtered.port !== undefined && badPort(filtered.port)) delete filtered.port
+  if (filtered.wslPort !== undefined && badPort(filtered.wslPort)) delete filtered.wslPort
+  // 服务运行中禁止改后端/发行版/WSL home——与 backendSetMode 同一守卫。
+  // 设置面板保存的是整个 settings 对象，不走 backendSetMode，必须在这里兜住
+  if (isRunning() || wslIsRunning()) {
+    const p = filtered as Record<string, unknown>
+    delete p.backend
+    delete p.wslDistro
+    delete p.wslHome
+  }
+  const next = saveSettings(filtered)
   if (patch.launchOnLogin != null && patch.launchOnLogin !== prev.launchOnLogin) {
     try {
       app.setLoginItemSettings({ openAtLogin: !!next.launchOnLogin })
@@ -467,7 +513,11 @@ const controller: Controller = {
     return buildStatus()
   }),
   install: () => serializeLifecycle(async () => {
+    // 与 update 同规则：先停服再安装（本地文件锁 / 新版本生效），失败则保持停止态
+    const wasRunning = isRunning() || wslIsRunning()
+    if (wasRunning) await stopServer()
     await doInstall(loadSettings().dshVersion || 'latest')
+    if (wasRunning) await startDsh()
     return buildStatus()
   }),
   update: (version?: string) => serializeLifecycle(() => updateDsh(version)),
@@ -638,13 +688,17 @@ const controller: Controller = {
       if (r.ok && wasRunning) await restartServer(onServerExit)
       return { ...r, message: r.message + note }
     }
+    // 本机与 WSL 同规则：回退在停服期间执行（profile 目录被整目录换入，
+    // 运行中换入会因文件占用失败/状态错乱），完成后按 lockfile 重建依赖并恢复原运行状态
+    const wasRunning = isRunning()
+    if (wasRunning) await stopServer()
     const r = await restoreBackup(name)
     let note = ''
     if (r.ok) {
       const e = await rebuildProfileDeps()
       if (e) note = '；' + e
     }
-    if (r.ok && isRunning()) await restartForPluginChange()
+    if (r.ok && wasRunning) await restartForPluginChange()
     return { ...r, message: r.message + note }
   }),
   deleteBackup: (name) => deleteBackupFile(name),
@@ -668,6 +722,12 @@ const controller: Controller = {
   backupDeleteManual: (name) => deleteManualBackup(name),
   // ---------- v0.3.0：启动失败恢复（#81/#94/#96/#98） ----------
   recoveryUninstallRetry: (name) => serializeLifecycle(async () => {
+    // 白名单：该通道经 main-window preload 暴露给 dsh Web UI 内容，只允许卸载
+    // 当前恢复态识别出的问题插件，且名称必须形如合法 npm 包名（防任意 pnpm remove）
+    const allowed = currentRecovery?.offending.some((t) => t.name === name) ?? false
+    if (!allowed || !/^[a-z0-9][a-z0-9._/@-]*$/i.test(name)) {
+      return { ok: false, message: '该插件不在当前恢复清单中，已拒绝卸载' }
+    }
     const wasRunning = isRunning() || wslIsRunning()
     if (wasRunning) await stopServer()
     const r = await uninstallPlugin(name)
@@ -684,6 +744,7 @@ const controller: Controller = {
       error = null
       currentRecovery = null
       recoveryPending = false
+      webUIStale = true // 主窗口可能停留在错误卡，强制重导航到新服务
     } catch (e) {
       phase = 'error'
       error = (e as Error).message
@@ -705,7 +766,10 @@ const controller: Controller = {
     }
     await startDsh()
     broadcastStatus()
-    if (phase === 'running') openMain() // 重置后成功启动：打开主窗口
+    if (phase === 'running') {
+      webUIStale = true // 主窗口可能停留在旧内容/错误卡，强制重导航
+      openMain() // 重置后成功启动：打开主窗口
+    }
     return { ok: true, message: r.message }
   }),
   recoveryRestart: () => serializeLifecycle(async () => {
@@ -841,7 +905,9 @@ async function boot(): Promise<void> {
     broadcastStatus()
   })
   try {
-    await startDsh()
+    // 经串行队列启动：boot 与托盘/按钮/恢复操作共用同一条生命周期链，
+    // 避免「启动进行中收到 stop」时两条机制互不知情（stop 等不到 starting）
+    await serializeLifecycle(() => startDsh())
   } catch {
     // 安装失败时 doInstall 已置 phase='error'，splash 显示错误 + 打开仪表盘按钮
     return
