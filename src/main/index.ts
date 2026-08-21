@@ -7,7 +7,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, writeFileSync
 import { promises as fsp } from 'node:fs'
 import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, ManualBackupInfo, PluginOpResult, PluginRecoveryInfo, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
-import { loadSettings, saveSettings, dshHome } from './settings'
+import { loadSettings, saveSettings, dshHome, dataDir } from './settings'
 import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl, getLastStartupStderr, getPortNote } from './server'
@@ -20,7 +20,7 @@ import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
 import {
   currentDistro, toUnc, validateIpcArg, VALID_DISTRO_RE,
-  wslDshHomeLinux, wslDshHomeWindows, wslHomeOf
+  wslBaseLinux, wslDshHomeLinux, wslDshHomeWindows, wslHomeOf
 } from './wsl'
 import { backendDiagnose, buildBackendInfo, runBackendSetup, syncFromWindows } from './wsl-backend'
 import {
@@ -462,6 +462,25 @@ const controller: Controller = {
   getLogs: () => getLogs(),
   openWebUI: () => openMain(),
   openDashboard: () => showDashboard(),
+  closeSplash: () => {
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close()
+  },
+  openBackupsDir: async () => {
+    // WSL 后端备份在发行版内（UNC），本机在 dataDir/backups；统一打开 backups 根目录
+    if (loadSettings().backend === 'wsl') {
+      const d = currentDistro()
+      const base = wslBaseLinux()
+      if (d && base) {
+        const unc = toUnc(d, `${base}/backups`)
+        mkdirSync(unc, { recursive: true })
+        await shell.openPath(unc)
+        return
+      }
+    }
+    const dir = join(dataDir(), 'backups')
+    mkdirSync(dir, { recursive: true })
+    await shell.openPath(dir)
+  },
   openDshHome: async () => {
     if (loadSettings().backend === 'wsl') {
       const win = wslDshHomeWindows()
@@ -642,6 +661,7 @@ const controller: Controller = {
       recoveryPending = !!currentRecovery && currentRecovery.offending.length > 0
     }
     broadcastStatus()
+    if (currentRecovery === null) openMain() // 恢复成功：打开主窗口（splash 由渲染层自关闭）
     return currentRecovery
       ? { ok: false, message: `已卸载 ${name}，但启动仍失败：${currentRecovery.message}` }
       : { ok: true, message: `已卸载 ${name} 并成功启动` }
@@ -655,6 +675,7 @@ const controller: Controller = {
     }
     await startDsh()
     broadcastStatus()
+    if (phase === 'running') openMain() // 重置后成功启动：打开主窗口
     return { ok: true, message: r.message }
   }),
   recoveryRestart: () => serializeLifecycle(async () => {

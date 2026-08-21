@@ -38,6 +38,13 @@ export default function Splash() {
     }
   }, [])
 
+  // v0.3.0：服务进入 running 即自动关闭启动页（含「卸载并重试/重置数据」恢复成功后的情形）
+  useEffect(() => {
+    if (status?.phase === 'running') {
+      void window.dsh.closeSplash()
+    }
+  }, [status?.phase])
+
   const isError = status?.phase === 'error'
   const message = isError ? status?.error : progress?.message ?? '正在准备…'
 

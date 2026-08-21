@@ -14,6 +14,8 @@ export function registerIpc(controller: Controller): void {
   ipcMain.handle('logs:get', () => controller.getLogs())
   ipcMain.handle('app:openWebUI', () => controller.openWebUI())
   ipcMain.handle('app:openDashboard', () => controller.openDashboard())
+  ipcMain.handle('app:closeSplash', () => controller.closeSplash())
+  ipcMain.handle('app:openBackupsDir', () => controller.openBackupsDir())
   ipcMain.handle('app:openDshHome', () => controller.openDshHome())
   ipcMain.handle('app:openPluginsDir', () => controller.openPluginsDir())
   ipcMain.handle('app:checkUpdate', () => controller.checkAppUpdate())

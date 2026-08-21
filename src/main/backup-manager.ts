@@ -71,7 +71,9 @@ function pruneBackups(): void {
 
 /** 安装/卸载前把整个 profile 目录快照到 backups/plugins/<时间戳>。
  *  调用方（controller）保证：WSL 模式下服务已停止后再调用（原子性）。
- *  UNC cpSync 失败时回退发行版内 wsl cp -r。 */
+ *  注意 dereference:true —— pnpm 默认 isolated 布局的 node_modules 是 symlink/junction，
+ *  不跟随地复制会在无「开发者模式/管理员」的机器上重建 symlink 时 EPERM，导致备份不落地（用户实测）。
+ *  跟随复制得到自包含备份（不再指向源 .pnpm）。UNC cpSync 失败时回退发行版内 wsl cp -r。 */
 export async function backupProfile(): Promise<void> {
   const dir = profileDir()
   if (!existsSync(join(dir, 'package.json'))) return
@@ -81,7 +83,7 @@ export async function backupProfile(): Promise<void> {
   const linuxDest = backupsLinuxDir()
   try {
     mkdirSync(dest, { recursive: true })
-    cpSync(dir, dest, { recursive: true })
+    cpSync(dir, dest, { recursive: true, dereference: true })
   } catch (e) {
     pushLog('备份 profile（UNC）失败: ' + (e as Error).message)
     if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
@@ -129,7 +131,8 @@ export async function restoreBackup(name: string): Promise<PluginOpResult> {
     rmSync(staging, { recursive: true, force: true })
     rmSync(oldDir, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
-    cpSync(src, staging, { recursive: true })
+    // dereference:true 与 backupProfile 一致——备份是自包含真实文件，恢复同样跟随复制
+    cpSync(src, staging, { recursive: true, dereference: true })
     if (existsSync(dir)) renameSync(dir, oldDir)
     renameSync(staging, dir)
     rmSync(oldDir, { recursive: true, force: true })
@@ -252,7 +255,7 @@ async function snapshotHome(tag: string): Promise<PluginOpResult> {
   mkdirSync(dest, { recursive: true })
   if (!existsSync(home)) return { ok: true, message: '（数据目录不存在，跳过快照）' }
   try {
-    cpSync(home, dest, { recursive: true })
+    cpSync(home, dest, { recursive: true, dereference: true })
     pushLog(`快照 dsh 数据（${tag}）: backups/reset/${timestamp().slice(0, 8)}…`)
     return { ok: true, message: '' }
   } catch (e) {

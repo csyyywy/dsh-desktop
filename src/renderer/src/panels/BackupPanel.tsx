@@ -88,7 +88,15 @@ export default function BackupPanel() {
 
   return (
     <div className="max-w-3xl space-y-5">
-      <Header title="备份与回退" desc="手动存档可随时创建、整体回退；自动快照在每次安装/卸载/更新插件前生成" />
+      <div className="flex items-start justify-between gap-3">
+        <Header title="备份与回退" desc="手动存档可随时创建、整体回退；自动快照在每次安装/卸载/更新插件前生成" />
+        <button
+          onClick={() => void window.dsh.openBackupsDir()}
+          className="shrink-0 rounded-lg bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-brand-500/20 hover:text-brand-300"
+        >
+          打开备份目录
+        </button>
+      </div>
 
       {msg && (
         <div

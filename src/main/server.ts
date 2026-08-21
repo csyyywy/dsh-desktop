@@ -251,7 +251,7 @@ async function startWslServer(): Promise<void> {
     `mkdir -p ${bashQuote(home)}`,
     `cd ${bashQuote(ws)}`,
     `[ -f ${bashQuote(`${home}/.credentials.yaml`)} ] && mv ${bashQuote(`${home}/.credentials.yaml`)} ${bashQuote(`${home}/.credentials.yaml.synced`)}`,
-    `${envPrefix}DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${port} >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
+    `${envPrefix}DSH_HOME=${bashQuote(home)} setsid nohup ${bashQuote(node)} ${bashQuote(bin)} --profile web --port ${port} --no-open >> ${bashQuote(logfile)} 2>&1 < /dev/null & sleep 1.5`,
     // grep -vw $$：pgrep -f 会匹配运行本脚本的 bash 自身（命令行含 pattern 文本），必须排除
     `PID=$(pgrep -u $(id -un) -f ${bashQuote(pattern)} | grep -vw $$ | head -1)`,
     `PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')`,
@@ -341,7 +341,8 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
 
   pushLog(`启动 dsh: ${dshBin()} --profile web --port ${port}`)
   diag(`startServer: spawning node=${rt.node} label=${rt.label} dshBin=${dshBin()} cwd=${workspace} backend=${loadSettings().backend} port=${port}`)
-  proc = spawn(rt.node, [dshBin(), '--profile', 'web', '--port', String(port)], {
+  // --no-open：dsh 0.1.0-rc.8 默认会**自动打开系统浏览器**（Web UI 由本壳主窗口承载），必须禁用
+  proc = spawn(rt.node, [dshBin(), '--profile', 'web', '--port', String(port), '--no-open'], {
     cwd: workspace,
     env,
     windowsHide: true,

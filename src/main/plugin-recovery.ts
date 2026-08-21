@@ -97,9 +97,13 @@ export async function resolveRecoveryPlugins(stderrLines: readonly string[]): Pr
     targets.push(t)
   }
 
-  // 1) 日志直接指认的可操作第三方插件
+  // 1) 日志直接指认的可操作第三方插件（#98 原则：仅在确属已装依赖时提供卸载，否则不误导）
   for (const ref of extractOffendingPlugins(stderrLines)) {
-    add({ name: ref, displayName: ref, reason: '启动日志直接指认该插件加载失败/冲突' })
+    if (isInProfileDeps(ref)) {
+      add({ name: ref, displayName: ref, reason: '启动日志直接指认该插件加载失败/冲突' })
+    } else {
+      add({ name: null, displayName: ref, reason: '启动日志提及，但不在已安装依赖中，无法直接卸载' })
+    }
   }
 
   // 2) 重复 loader 条目 → 映射回真实包（#98）；内部标识不提供误导性卸载入口

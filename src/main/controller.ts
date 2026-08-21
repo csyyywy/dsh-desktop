@@ -14,6 +14,8 @@ export interface Controller {
   getLogs(): string[]
   openWebUI(): void
   openDashboard(): void
+  closeSplash(): void
+  openBackupsDir(): Promise<void>
   openDshHome(): Promise<void>
   openPluginsDir(): Promise<void>
   checkAppUpdate(): Promise<AppUpdateInfo>

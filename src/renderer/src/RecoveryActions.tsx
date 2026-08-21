@@ -44,7 +44,7 @@ export default function RecoveryActions({ recovery }: { recovery: PluginRecovery
                   </button>
                 ) : (
                   <span className="shrink-0 rounded-lg bg-white/5 px-2 py-1 text-[11px] text-slate-400">
-                    内部标识，无法直接卸载
+                    无法自动卸载（不在已装依赖中）
                   </span>
                 )}
               </div>

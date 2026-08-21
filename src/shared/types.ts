@@ -174,6 +174,10 @@ export interface DshApi {
   getLogs(): Promise<string[]>
   openWebUI(): Promise<void>
   openDashboard(): Promise<void>
+  /** v0.3.0：服务运行后由 Splash 自关闭（含恢复成功后） */
+  closeSplash(): Promise<void>
+  /** 打开备份根目录（dataDir/backups，含自动快照与手动存档） */
+  openBackupsDir(): Promise<void>
   openDshHome(): Promise<void>
   openPluginsDir(): Promise<void>
   checkAppUpdate(): Promise<AppUpdateInfo>
