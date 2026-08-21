@@ -21,6 +21,30 @@
 - **渲染层 P2/P3**：文件桥防重复触发改按进度派生的活跃传输数（原 busy 只覆盖入队瞬间）；LogsPanel key 改单调 id（环形缓冲滑动不再整表重挂载）；搜索成功不再抹掉上一步操作消息；已装列表刷新失败有提示；主窗口 preload 错误卡扫描加 500ms leading+trailing 节流并去掉 characterData 观察。
 - **发行包瘦身**：bundle-dsh finalize 阶段清理上游 sourcemap（现存 resources 已手动清掉 6273 个 / 33.8MB）。
 
+### 0.2 CI（暂缓，待 token 补 scope）
+
+gh 的 OAuth token 缺 `workflow` scope，`.github/workflows/ci.yml` 无法推送（remote rejected）。恢复步骤：
+`gh auth refresh -s workflow` → 重建 `.github/workflows/ci.yml`，内容：
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts   # 跳过 electron 二进制下载
+      - run: npm run typecheck
+      - run: npm test
+```
+
 ---
 
 ## 1. 项目概述
