@@ -4,7 +4,7 @@ import type { PluginInfo, PluginOpResult, PluginUpdateInfo } from '../../../shar
 import { errMsg } from '../lib/errors'
 import { Button, Card, Header, inputCls } from '../ui'
 
-export default function PluginsPanel() {
+export default function PluginsPanel({ active }: { active: boolean }) {
   const [installed, setInstalled] = useState<PluginInfo[]>([])
   const [results, setResults] = useState<PluginInfo[]>([])
   const [query, setQuery] = useState('')
@@ -71,6 +71,11 @@ export default function PluginsPanel() {
     void refreshUpdates()
     void search('')
   }, [])
+  // 面板常驻挂载（tab 保活）：切到本页时刷新已装列表（本地读取，不烧 GitHub 配额；
+  // 更新检查走 GitHub API，仍只在首载/手动触发）
+  useEffect(() => {
+    if (active) void refreshInstalled()
+  }, [active])
 
   // 1.2：统一「busy + 结果消息 + 异常兜底」——IPC reject 时 busy 必须复位
   const doOp = async (

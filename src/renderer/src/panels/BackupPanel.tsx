@@ -17,30 +17,38 @@ function formatDate(ts: number): string {
   return d.toLocaleString()
 }
 
-export default function BackupPanel() {
+export default function BackupPanel({ active }: { active: boolean }) {
   const [auto, setAuto] = useState<string[]>([])
   const [manual, setManual] = useState<ManualBackupInfo[]>([])
   const [label, setLabel] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
   const [msgOk, setMsgOk] = useState(true)
+  // 列表加载失败要可见（此前静默吞掉，首载失败会显示误导性的「暂无」空态）
+  const [loadErr, setLoadErr] = useState('')
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
       setAuto(await window.dsh.listBackups())
-    } catch {
-      /* 忽略 */
+      setLoadErr('')
+    } catch (e) {
+      setLoadErr('自动快照列表加载失败: ' + errMsg(e))
     }
     try {
       setManual(await window.dsh.backupListManual())
-    } catch {
-      /* 忽略 */
+    } catch (e) {
+      setLoadErr((prev) => prev || '手动存档列表加载失败: ' + errMsg(e))
     }
   }, [])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
+  // 面板常驻挂载（tab 保活）：每次切到本页都重新拉取，
+  // 否则插件页刚生成的自动快照在本列表里永远看不到
+  useEffect(() => {
+    if (active) void refresh()
+  }, [active, refresh])
 
   const doOp = async (
     busyKey: string,
@@ -105,6 +113,12 @@ export default function BackupPanel() {
           }`}
         >
           {msg}
+        </div>
+      )}
+
+      {loadErr && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          {loadErr}
         </div>
       )}
 

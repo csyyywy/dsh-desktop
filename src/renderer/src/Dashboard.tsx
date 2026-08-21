@@ -87,10 +87,10 @@ export default function Dashboard() {
           <LogsPanel />
         </div>
         <div className={tab === 'plugins' ? '' : 'hidden'}>
-          <PluginsPanel />
+          <PluginsPanel active={tab === 'plugins'} />
         </div>
         <div className={tab === 'backups' ? '' : 'hidden'}>
-          <BackupPanel />
+          <BackupPanel active={tab === 'backups'} />
         </div>
       </main>
     </div>
