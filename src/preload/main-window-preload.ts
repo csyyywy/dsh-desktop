@@ -29,34 +29,61 @@ function injectRestartButton(card: Element): void {
 }
 
 function watchForErrorCard(): void {
-  let scanning = false
+  let running = false
+  let pending = false
+  let lastRun = 0
+  // 节流（leading + trailing，500ms）：大 DOM 上每次变更都全量 textContent 扫描开销大，
+  // 但纯 leading 节流会漏掉「静默期后不再有变更」的最后一次插入，必须带尾随补偿
+  const SCAN_INTERVAL = 500
   const scan = (): void => {
-    if (scanning) return
-    scanning = true
+    if (running) {
+      pending = true
+      return
+    }
+    const wait = Math.max(0, SCAN_INTERVAL - (Date.now() - lastRun))
+    if (wait > 0) {
+      if (!pending) {
+        pending = true
+        setTimeout(() => {
+          pending = false
+          scan()
+        }, wait)
+      }
+      return
+    }
+    running = true
     requestAnimationFrame(() => {
-      scanning = false
+      lastRun = Date.now()
       try {
-        const root = document.body ?? document.documentElement
-        if (!root || !(root.textContent ?? '').includes('Failed to load plugins')) return
-        // 找包含该文案的叶子元素，取其卡片容器注入按钮
-        const all = root.querySelectorAll('*')
-        for (const el of Array.from(all)) {
-          if (el.children.length > 0) continue
-          if (!/Failed to load plugins/i.test(el.textContent ?? '')) continue
-          const card = el.closest('[class*="card" i], [class*="error" i], main, article') ?? el.parentElement ?? el
-          injectRestartButton(card)
-          break
-        }
+        doScan()
       } catch {
         /* 忽略 DOM 扫描异常 */
       }
+      running = false
+      if (pending) {
+        pending = false
+        scan()
+      }
     })
+  }
+  const doScan = (): void => {
+    const root = document.body ?? document.documentElement
+    if (!root || !(root.textContent ?? '').includes('Failed to load plugins')) return
+    // 找包含该文案的叶子元素，取其卡片容器注入按钮
+    const all = root.querySelectorAll('*')
+    for (const el of Array.from(all)) {
+      if (el.children.length > 0) continue
+      if (!/Failed to load plugins/i.test(el.textContent ?? '')) continue
+      const card = el.closest('[class*="card" i], [class*="error" i], main, article') ?? el.parentElement ?? el
+      injectRestartButton(card)
+      break
+    }
   }
   const mo = new MutationObserver(scan)
   const start = (): void => {
     scan()
     try {
-      mo.observe(document.body ?? document.documentElement, { childList: true, subtree: true, characterData: true })
+      mo.observe(document.body ?? document.documentElement, { childList: true, subtree: true })
     } catch {
       /* 忽略 observe 失败 */
     }

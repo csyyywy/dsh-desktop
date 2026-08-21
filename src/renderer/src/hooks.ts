@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AppSettings, AppStatus } from '../../shared/types'
 
 export function useStatus(): AppStatus | null {
@@ -19,16 +19,24 @@ export function useStatus(): AppStatus | null {
   return status
 }
 
-export function useLogs(max = 400): string[] {
-  const [logs, setLogs] = useState<string[]>([])
+export interface LogLine {
+  /** 单调递增 id：环形缓冲滑动时 key 保持稳定，避免整表重挂载 */
+  id: number
+  text: string
+}
+
+export function useLogs(max = 400): LogLine[] {
+  const [logs, setLogs] = useState<LogLine[]>([])
+  const seq = useRef(0)
   useEffect(() => {
     let mounted = true
     window.dsh.getLogs().then((l) => {
-      if (mounted) setLogs(l.slice(-max))
+      if (mounted) setLogs(l.slice(-max).map((text) => ({ id: ++seq.current, text })))
     })
     const off = window.dsh.onLogLine((line) => {
       if (!mounted) return
-      setLogs((prev) => [...prev.slice(-(max - 1)), line])
+      const id = ++seq.current
+      setLogs((prev) => [...prev.slice(-(max - 1)), { id, text: line }])
     })
     return () => {
       mounted = false

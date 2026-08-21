@@ -16,7 +16,7 @@
 //   pnpm 11 的构建拦截审批，以及 koffi cnoke 在网络上挂起的问题（实测）。
 // - 构建完成后校验 koffi/node-pty 可加载 + dsh --version 可运行。
 // - pnpm 失败回退 npm（原逻辑），不阻断构建。
-import { existsSync, mkdirSync, rmSync, cpSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, cpSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -95,6 +95,27 @@ function main() {
   verifyBundle(destDir)
 }
 
+/** 瘦身：上游 node_modules 的 sourcemap（*.map，实测约 34MB/6363 个）不进发行包 */
+function pruneMaps(dir) {
+  if (!existsSync(dir)) return
+  let removed = 0
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) {
+        walk(p)
+        continue
+      }
+      if (e.name.endsWith('.map')) {
+        rmSync(p, { force: true })
+        removed++
+      }
+    }
+  }
+  walk(dir)
+  console.log(`[bundle-dsh] 已清理 ${removed} 个 sourcemap 文件`)
+}
+
 /** 把 tmp 的 node_modules 等搬进 resources/dsh-bundle（构建产物目录） */
 function finalize(tmpDir, destDir) {
   rmSync(destDir, { recursive: true, force: true })
@@ -104,6 +125,7 @@ function finalize(tmpDir, destDir) {
     if (existsSync(s)) cpSync(s, join(destDir, entry), { recursive: true })
   }
   rmSync(tmpDir, { recursive: true, force: true })
+  pruneMaps(join(destDir, 'node_modules'))
   console.log('[bundle-dsh] 完成：', destDir)
 }
 

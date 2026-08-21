@@ -24,10 +24,11 @@ const api: DshApi = {
   listPlugins: () => ipcRenderer.invoke('plugins:list'),
   searchPlugins: (query: string, sort?: string, source?: string) => ipcRenderer.invoke('plugins:search', query, sort, source),
   preflightPlugin: (name: string, source?: string) => ipcRenderer.invoke('plugins:preflight', name, source),
-  installPlugin: (name: string, source?: string) => ipcRenderer.invoke('plugins:install', name, source),
+  installPlugin: (name: string, source?: string, approvedBuilds?: string[]) =>
+    ipcRenderer.invoke('plugins:install', name, source, approvedBuilds),
   uninstallPlugin: (name: string) => ipcRenderer.invoke('plugins:uninstall', name),
   checkPluginUpdates: () => ipcRenderer.invoke('plugins:checkUpdates'),
-  updatePlugin: (name: string) => ipcRenderer.invoke('plugins:update', name),
+  updatePlugin: (name: string, approvedBuilds?: string[]) => ipcRenderer.invoke('plugins:update', name, approvedBuilds),
   pickBackgroundImage: () => ipcRenderer.invoke('app:pickBackgroundImage'),
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
   listBackups: () => ipcRenderer.invoke('plugins:backups'),

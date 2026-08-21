@@ -1,8 +1,38 @@
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AppSettings, BackendMode, Theme } from '../shared/types'
 import { pushLog } from './log'
+
+// 密钥静态加密（safeStorage/DPAPI）：settings.json 里的 apiKey/githubToken 不再明文落盘。
+// 前缀 enc:v1: 标识密文；解密失败（换用户/损坏）按空处理并告警，不阻断启动。
+const ENC_PREFIX = 'enc:v1:'
+
+function encryptSecret(plain: string): string {
+  if (!plain || plain.startsWith(ENC_PREFIX)) return plain
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return plain
+    return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
+  } catch {
+    return plain
+  }
+}
+
+function decryptSecret(stored: unknown): string {
+  if (typeof stored !== 'string') return ''
+  if (!stored.startsWith(ENC_PREFIX)) return stored // 兼容历史明文，下次保存时加密
+  try {
+    return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
+  } catch (e) {
+    pushLog('settings.json 中的密文密钥解密失败（可能更换了系统用户），已按空处理')
+    return ''
+  }
+}
+
+/** 渲染层脱敏：密钥不下发，只给「是否已设置」布尔位（write-only 输入语义） */
+export function redactSettingsForRenderer(s: AppSettings): AppSettings {
+  return { ...s, apiKey: '', githubToken: '', hasApiKey: !!s.apiKey, hasGithubToken: !!s.githubToken }
+}
 
 const DEFAULTS: AppSettings = {
   dshVersion: 'latest',
@@ -83,12 +113,12 @@ export function loadSettings(): AppSettings {
   if (typeof p.dshVersion === 'string') out.dshVersion = p.dshVersion
   if (typeof p.workspace === 'string') out.workspace = p.workspace
   if (typeof p.port === 'number' && Number.isFinite(p.port)) out.port = p.port
-  if (typeof p.apiKey === 'string') out.apiKey = p.apiKey
+  out.apiKey = decryptSecret(p.apiKey)
   if (typeof p.launchOnLogin === 'boolean') out.launchOnLogin = p.launchOnLogin
   if (p.theme === 'dark' || p.theme === 'light') out.theme = p.theme as Theme
   if (typeof p.appUpdateRepo === 'string') out.appUpdateRepo = p.appUpdateRepo
   if (typeof p.background === 'string') out.background = p.background
-  if (typeof p.githubToken === 'string') out.githubToken = p.githubToken
+  out.githubToken = decryptSecret(p.githubToken)
   if (p.backend === 'local' || p.backend === 'wsl') out.backend = p.backend as BackendMode
   if (typeof p.wslDistro === 'string') out.wslDistro = p.wslDistro
   if (typeof p.wslHome === 'string') out.wslHome = p.wslHome
@@ -100,9 +130,11 @@ export function loadSettings(): AppSettings {
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   const next = { ...loadSettings(), ...sanitizePatch(patch) }
   mkdirSync(dataDir(), { recursive: true })
+  // 落盘前把密钥加密（内存中的 next 保持明文，供主进程使用）
+  const toStore: AppSettings = { ...next, apiKey: encryptSecret(next.apiKey), githubToken: encryptSecret(next.githubToken) }
   const p = settingsPath()
   const tmp = p + '.tmp'
-  writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+  writeFileSync(tmp, JSON.stringify(toStore, null, 2), 'utf8')
   renameSync(tmp, p)
   return next
 }

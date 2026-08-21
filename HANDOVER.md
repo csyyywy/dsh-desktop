@@ -13,6 +13,14 @@
 - **安全加固**：runNpm 移除 shell:true（系统回退解析 npm-cli.js 绝对路径）；dsh 版本号白名单；插件名/spec 白名单（防 pnpm 旗标注入）；recovery:uninstallRetry 白名单=当前恢复清单且 preload 不再暴露该通道；fsbOpen win 侧补路径校验；curl 头 CRLF 净化；更新下载域白名单；WSL 启动日志脱敏 API Key；portproxy 改绑 WSL 网关 IP + 防火墙限 localsubnet（并清理旧 0.0.0.0 映射）；settings:set 运行中禁改 backend/distro/home + 端口范围校验；三窗口 will-navigate/will-redirect 守卫。
 - **构建发布**：产物改连字符命名（与 latest.yml 一致，免手工改名）；asar files 去掉冗余 icons；THIRD-PARTY-NOTICES 补 react/react-dom/tailwindcss 与内置运行时清单；新增 GitHub Actions CI（typecheck+test）；bundle-dsh 默认版本固化为 0.1.0-rc.8；download-node 校验 SHASUMS256、download-pnpm 校验 registry integrity。
 
+### 0.1 暂缓项批次（同日续）
+
+- **构建脚本逐包确认（默认拒绝）**：install/update 遇 `ERR_PNPM_IGNORED_BUILDS` 不再自动放行——返回 `buildApprovals` 清单，插件面板列出待确认包，用户点「放行并重试」才写入 allowBuilds 并重试；预放行逻辑已删除。
+- **密钥静态加密 + write-only**：settings.json 中 apiKey/githubToken 经 safeStorage(DPAPI) 加密（`enc:v1:` 前缀，兼容历史明文、解密失败按空）；`getSettings`/`setSettings` 响应不再下发密钥值，只回 `hasApiKey/hasGithubToken`；设置面板改「留空保持不变」+ 显式清除按钮。
+- **IPC 来源校验**：registerIpc 统一包装，仅接受本应用三个窗口 webContents 的调用。
+- **渲染层 P2/P3**：文件桥防重复触发改按进度派生的活跃传输数（原 busy 只覆盖入队瞬间）；LogsPanel key 改单调 id（环形缓冲滑动不再整表重挂载）；搜索成功不再抹掉上一步操作消息；已装列表刷新失败有提示；主窗口 preload 错误卡扫描加 500ms leading+trailing 节流并去掉 characterData 观察。
+- **发行包瘦身**：bundle-dsh finalize 阶段清理上游 sourcemap（现存 resources 已手动清掉 6273 个 / 33.8MB）。
+
 ---
 
 ## 1. 项目概述

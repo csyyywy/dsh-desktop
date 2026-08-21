@@ -11,6 +11,9 @@ export default function SettingsPanel() {
   const [local, setLocal] = useState<AppSettings | null>(settings)
   const [saved, setSaved] = useState(false)
   const [bgErr, setBgErr] = useState('')
+  // 密钥 write-only：主进程不再下发密钥值，这里只收集新输入（空 = 保持不变）
+  const [keyInput, setKeyInput] = useState('')
+  const [tokenInput, setTokenInput] = useState('')
 
   useEffect(() => {
     setLocal(settings)
@@ -23,12 +26,29 @@ export default function SettingsPanel() {
     setSaved(false)
     setBgErr('')
     try {
-      await updateSettings(local)
+      const patch: Partial<AppSettings> = { ...local }
+      // 密钥不随整对象回传：只有用户输入了新值才提交，避免把脱敏空值写回覆盖真值
+      delete (patch as Record<string, unknown>).apiKey
+      delete (patch as Record<string, unknown>).githubToken
+      if (keyInput.trim()) patch.apiKey = keyInput.trim()
+      if (tokenInput.trim()) patch.githubToken = tokenInput.trim()
+      await updateSettings(patch)
       setSaved(true)
+      setKeyInput('')
+      setTokenInput('')
       setTimeout(() => setSaved(false), 2000)
     } catch (e) {
       // 1.2：保存失败要有反馈，不能静默
       setBgErr('保存失败: ' + errMsg(e))
+    }
+  }
+
+  const clearSecret = async (k: 'apiKey' | 'githubToken'): Promise<void> => {
+    setBgErr('')
+    try {
+      await updateSettings({ [k]: '' } as Partial<AppSettings>)
+    } catch (e) {
+      setBgErr(errMsg(e))
     }
   }
 
@@ -78,11 +98,16 @@ export default function SettingsPanel() {
           <Field label="API Key（可选）">
             <input
               type="password"
-              value={local.apiKey}
-              onChange={(e) => set({ apiKey: e.target.value })}
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
               className={inputCls}
-              placeholder="DEEPSEEK_API_KEY，留空则在 Web UI 中设置"
+              placeholder={settings?.hasApiKey ? '已保存（输入新值可更换，留空保持不变）' : 'DEEPSEEK_API_KEY，留空则在 Web UI 中设置'}
             />
+            {settings?.hasApiKey && (
+              <button onClick={() => void clearSecret('apiKey')} className="mt-1 text-xs text-rose-300 hover:underline">
+                清除已保存的 Key
+              </button>
+            )}
           </Field>
           <Field label="dsh 版本（默认 latest）">
             <input value={local.dshVersion} onChange={(e) => set({ dshVersion: e.target.value })} className={inputCls} />
@@ -106,11 +131,16 @@ export default function SettingsPanel() {
           <Field label="GitHub Token（可选，解除搜索频率限制）">
             <input
               type="password"
-              value={local.githubToken}
-              onChange={(e) => set({ githubToken: e.target.value })}
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
               className={inputCls}
-              placeholder="ghp_xxx，仅本地保存"
+              placeholder={settings?.hasGithubToken ? '已保存（输入新值可更换，留空保持不变）' : 'ghp_xxx，仅本地保存'}
             />
+            {settings?.hasGithubToken && (
+              <button onClick={() => void clearSecret('githubToken')} className="mt-1 text-xs text-rose-300 hover:underline">
+                清除已保存的 Token
+              </button>
+            )}
           </Field>
           <Toggle label="开机自启" checked={local.launchOnLogin} onChange={(v) => set({ launchOnLogin: v })} />
 

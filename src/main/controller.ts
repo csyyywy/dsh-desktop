@@ -24,10 +24,10 @@ export interface Controller {
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
   preflightPlugin(name: string, source?: string): Promise<PluginOpResult>
-  installPlugin(name: string, source?: string): Promise<PluginOpResult>
+  installPlugin(name: string, source?: string, approvedBuilds?: string[]): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
   checkPluginUpdates(): Promise<PluginUpdateInfo[]>
-  updatePlugin(name: string): Promise<PluginOpResult>
+  updatePlugin(name: string, approvedBuilds?: string[]): Promise<PluginOpResult>
   pickBackgroundImage(): Promise<string | null>
   openExternal(url: string): void
   listBackups(): Promise<string[]>

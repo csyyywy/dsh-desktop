@@ -313,7 +313,7 @@ export async function checkPluginUpdates(): Promise<PluginUpdateInfo[]> {
   return out
 }
 
-export async function updatePlugin(name: string): Promise<PluginOpResult> {
+export async function updatePlugin(name: string, approvedBuilds?: string[]): Promise<PluginOpResult> {
   assertSafeName(name)
   return withPluginMutex(async () => {
   searchCache = null
@@ -329,9 +329,7 @@ export async function updatePlugin(name: string): Promise<PluginOpResult> {
     return { ok: false, message: `无法获取「${name}」的最新版本: ${(e as Error).message}` }
   }
   await backupProfile()
-  const npmName = isGitSpec(spec) ? null : name
-  if (npmName) allowBuild(npmName)
-  // git 依赖：显式锁到远端最新 HEAD commit（bare spec 重装可能被 pnpm 判定无变化而跳过）
+  // 构建脚本放行改用户确认（同 installPlugin，默认拒绝）
   let target: string
   if (isGitSpec(spec)) {
     if (!info.commit) return { ok: false, message: `无法获取「${name}」的远端最新 commit` }
@@ -344,6 +342,16 @@ export async function updatePlugin(name: string): Promise<PluginOpResult> {
   for (let attempt = 0; result.code !== 0 && attempt < 3; attempt++) {
     const ignored = parseIgnoredBuilds(result.output)
     if (ignored.length === 0) break
+    const known = approvedBuilds ?? []
+    const pending = ignored.filter((p) => !known.includes(p))
+    if (!approvedBuilds || pending.length > 0) {
+      const all = [...new Set([...known, ...ignored])]
+      return {
+        ok: false,
+        buildApprovals: all,
+        message: `以下依赖包含安装期构建脚本（放行 = 允许执行其代码），请确认后重试: ${all.join(', ')}`
+      }
+    }
     approveBuilds(ignored)
     result = await runPnpm(['add', target])
   }
@@ -736,7 +744,11 @@ export async function preflightPluginInstall(spec: string, source: string = 'git
   }
 }
 
-export async function installPlugin(spec: string, source: string = 'github'): Promise<PluginOpResult> {
+export async function installPlugin(
+  spec: string,
+  source: string = 'github',
+  approvedBuilds?: string[]
+): Promise<PluginOpResult> {
   assertSafeSpec(spec)
   return withPluginMutex(async () => {
   searchCache = null
@@ -756,16 +768,26 @@ export async function installPlugin(spec: string, source: string = 'github'): Pr
         : /^(https?|git):\/\//.test(spec)
           ? spec
           : `git+https://github.com/${repo}`
-    // 预取 npm 包名（下方统一放行构建脚本；pnpm 默认拦截 git 依赖的 prepare 脚本）
+    // 预取 npm 包名（供占位包检测；构建脚本放行一律走用户确认，不再预放行）
     npmName = await fetchRepoNpmName(repo)
   }
-  if (npmName) allowBuild(npmName)
   // pnpm 11 会拦截需要构建脚本的依赖并报 ERR_PNPM_IGNORED_BUILDS（致命）。
-  // 把被拦的包写进 allowBuilds 后重试，最多三轮（依赖树里可能有多个）。
+  // 安全策略（默认拒绝）：拦截时返回待确认清单，用户逐包确认后带 approvedBuilds 重试；
+  // 绝不自动放行——安装第三方插件 = 执行其（及传递依赖的）构建脚本，必须显式同意
   let result = await runPnpm(['add', pnpmSpec])
   for (let attempt = 0; result.code !== 0 && attempt < 3; attempt++) {
     const ignored = parseIgnoredBuilds(result.output)
     if (ignored.length === 0) break
+    const known = approvedBuilds ?? []
+    const pending = ignored.filter((p) => !known.includes(p))
+    if (!approvedBuilds || pending.length > 0) {
+      const all = [...new Set([...known, ...ignored])]
+      return {
+        ok: false,
+        buildApprovals: all,
+        message: `以下依赖包含安装期构建脚本（放行 = 允许执行其代码），请确认后重试: ${all.join(', ')}`
+      }
+    }
     approveBuilds(ignored)
     result = await runPnpm(['add', pnpmSpec])
   }

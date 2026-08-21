@@ -7,7 +7,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, writeFileSync
 import { promises as fsp } from 'node:fs'
 import type { AppSettings, AppStatus, AppUpdateProgress, BackendInfo, BackendMode, BackendSetupProgress, FsSide, FsTransferProgress, FsTransferRequest, InstallProgress, ManualBackupInfo, PluginOpResult, PluginRecoveryInfo, ServerPhase } from '../shared/types'
 import type { Controller } from './controller'
-import { loadSettings, saveSettings, dshHome, dataDir } from './settings'
+import { loadSettings, saveSettings, dshHome, dataDir, redactSettingsForRenderer } from './settings'
 import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
 import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl, getLastStartupStderr, getPortNote } from './server'
@@ -465,7 +465,8 @@ async function applySettings(patch: Partial<AppSettings>): Promise<AppSettings> 
     }
   }
   broadcastStatus()
-  return next
+  // 密钥不下发渲染层（write-only）：只回「是否已设置」
+  return redactSettingsForRenderer(next)
 }
 
 /** 回退/恢复后按 lockfile 重建 profile 依赖（备份不含 node_modules）。成功返回 null，失败返回错误说明 */
@@ -522,7 +523,7 @@ const controller: Controller = {
   }),
   update: (version?: string) => serializeLifecycle(() => updateDsh(version)),
   listVersions,
-  getSettings: () => loadSettings(),
+  getSettings: () => redactSettingsForRenderer(loadSettings()),
   setSettings: (patch) => applySettings(patch),
   getLogs: () => getLogs(),
   openWebUI: () => openMain(),
@@ -608,16 +609,16 @@ const controller: Controller = {
   searchPlugins: (query, sort, source) => searchPlugins(query, sort, source),
   // v0.3.0：安装前冲突预检（只读，不动服务/插件）
   preflightPlugin: (name, source) => preflightPluginFile(name, source),
-  installPlugin: (name, source) => serializeLifecycle(async () => {
+  installPlugin: (name, source, approvedBuilds) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // WSL：停服 → 安装（备份在停止期间快照，保证一致）→ 恢复原运行状态
       const wasRunning = wslIsRunning()
       if (wasRunning) await stopServer()
-      const r = await installPlugin(name, source)
+      const r = await installPlugin(name, source, approvedBuilds)
       if (r.ok && wasRunning) await restartServer(onServerExit)
       return r
     }
-    const r = await installPlugin(name, source)
+    const r = await installPlugin(name, source, approvedBuilds)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   }),
@@ -634,16 +635,16 @@ const controller: Controller = {
     return r
   }),
   checkPluginUpdates: () => checkPluginUpdates(),
-  updatePlugin: (name) => serializeLifecycle(async () => {
+  updatePlugin: (name, approvedBuilds) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
       // WSL：停服 → 更新（备份在停止期间快照）→ 恢复原运行状态
       const wasRunning = wslIsRunning()
       if (wasRunning) await stopServer()
-      const r = await updatePlugin(name)
+      const r = await updatePlugin(name, approvedBuilds)
       if (r.ok && wasRunning) await restartServer(onServerExit)
       return r
     }
-    const r = await updatePlugin(name)
+    const r = await updatePlugin(name, approvedBuilds)
     if (r.ok && isRunning()) await restartForPluginChange()
     return r
   }),
@@ -923,7 +924,14 @@ if (!gotLock) {
   app.on('second-instance', () => openMain())
 
   void app.whenReady().then(() => {
-    registerIpc(controller)
+    // IPC 来源白名单：只接受本应用自身窗口的 webContents 调用
+    const isTrustedSender = (e: Electron.IpcMainInvokeEvent): boolean => {
+      for (const w of [mainWindow, dashboardWindow, splashWindow]) {
+        if (w && !w.isDestroyed() && w.webContents.id === e.sender.id) return true
+      }
+      return false
+    }
+    registerIpc(controller, isTrustedSender)
     onLog((line) => sendToWindows('log:line', line))
 
     splashWindow = createSplash()

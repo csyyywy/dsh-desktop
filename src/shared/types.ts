@@ -31,6 +31,10 @@ export interface AppSettings {
   wslPort: number
   /** WSL 内 npm 镜像 registry（可选，空 = 官方源） */
   npmRegistry: string
+  /** 仅回传渲染层：是否已保存 API Key（密钥本身不再下发渲染层，write-only 输入） */
+  hasApiKey?: boolean
+  /** 仅回传渲染层：是否已保存 GitHub Token（同上） */
+  hasGithubToken?: boolean
 }
 
 export interface PluginInfo {
@@ -66,6 +70,8 @@ export interface PluginOpResult {
   conflicts?: string[]
   /** 安装前预检的提示（非阻断） */
   warnings?: string[]
+  /** 非空 = 安装被 pnpm 拦截的构建脚本包清单；用户确认后原样传回 install/update 重试 */
+  buildApprovals?: string[]
 }
 
 export type ServerPhase = 'stopped' | 'installing' | 'starting' | 'running' | 'error'
@@ -186,14 +192,14 @@ export interface DshApi {
   onAppUpdateProgress(cb: (p: AppUpdateProgress) => void): () => void
   listPlugins(): Promise<PluginInfo[]>
   searchPlugins(query: string, sort?: string, source?: string): Promise<PluginInfo[]>
-  installPlugin(name: string, source?: string): Promise<PluginOpResult>
+  installPlugin(name: string, source?: string, approvedBuilds?: string[]): Promise<PluginOpResult>
   /** 安装前冲突预检（v0.3.0：先检测再安装） */
   preflightPlugin(name: string, source?: string): Promise<PluginOpResult>
   uninstallPlugin(name: string): Promise<PluginOpResult>
   /** 检查所有已安装插件的可用更新（npm 包查 registry latest；git 依赖查远端 HEAD） */
   checkPluginUpdates(): Promise<PluginUpdateInfo[]>
   /** 更新指定已安装插件到最新版本 */
-  updatePlugin(name: string): Promise<PluginOpResult>
+  updatePlugin(name: string, approvedBuilds?: string[]): Promise<PluginOpResult>
   pickBackgroundImage(): Promise<string | null>
   openExternal(url: string): Promise<void>
   listBackups(): Promise<string[]>

@@ -18,12 +18,17 @@ export default function PluginsPanel() {
   const [customSpec, setCustomSpec] = useState('')
   const [updates, setUpdates] = useState<Record<string, PluginUpdateInfo>>({})
   const [checking, setChecking] = useState(false)
+  // 构建脚本放行确认（默认拒绝）：pnpm 拦截到带构建脚本的依赖时，先列清单等用户确认
+  const [pending, setPending] = useState<
+    { kind: 'install' | 'update'; name: string; src?: string; list: string[] } | null
+  >(null)
 
   const refreshInstalled = async (): Promise<void> => {
     try {
       setInstalled(await window.dsh.listPlugins())
-    } catch {
-      /* 忽略，保持旧列表 */
+    } catch (e) {
+      setMsgOk(false)
+      setMsg('已装列表刷新失败: ' + errMsg(e))
     }
   }
   const refreshUpdates = async (): Promise<void> => {
@@ -46,7 +51,7 @@ export default function PluginsPanel() {
       const list = await window.dsh.searchPlugins(q, s, src)
       if (seq !== searchSeq.current) return // 过期响应，丢弃
       setResults(list)
-      setMsg('')
+      // 不清 msg：搜索成功不应抹掉上一步操作的结果/错误提示（操作消息由下一次操作覆盖）
     } catch (e) {
       if (seq !== searchSeq.current) return
       setResults([])
@@ -88,22 +93,37 @@ export default function PluginsPanel() {
       setBusy(null)
     }
   }
-  // v0.3.0：安装前冲突预检（先检测再安装）——命中冲突先报告，用户确认后才继续
-  const preflightAndInstall = async (busyKey: string, name: string, src: string): Promise<void> => {
+  // v0.3.0：安装前冲突预检（先检测再安装）——命中冲突先报告，用户确认后才继续。
+  // approvedBuilds 非空 = 构建脚本放行后的重试（跳过预检，直接装）
+  const preflightAndInstall = async (
+    busyKey: string,
+    name: string,
+    src: string,
+    approvedBuilds?: string[]
+  ): Promise<void> => {
     setBusy(busyKey)
     setMsg('')
     setMsgOk(true)
     try {
-      const check = await window.dsh.preflightPlugin(name, src)
-      const detail = [...(check.conflicts ?? []), ...(check.warnings ?? [])].map((c) => `· ${c}`).join('\n')
-      if (!check.ok) {
-        setMsg(`${check.message}\n${detail}`)
-        setMsgOk(false)
-        if (!window.confirm(`${check.message}\n\n${detail}\n\n仍要安装吗？`)) return
-      } else if (detail) {
-        setMsg(`提示：\n${detail}`)
+      if (!approvedBuilds) {
+        const check = await window.dsh.preflightPlugin(name, src)
+        const detail = [...(check.conflicts ?? []), ...(check.warnings ?? [])].map((c) => `· ${c}`).join('\n')
+        if (!check.ok) {
+          setMsg(`${check.message}\n${detail}`)
+          setMsgOk(false)
+          if (!window.confirm(`${check.message}\n\n${detail}\n\n仍要安装吗？`)) return
+        } else if (detail) {
+          setMsg(`提示：\n${detail}`)
+        }
       }
-      const r = await window.dsh.installPlugin(name, src)
+      const r = await window.dsh.installPlugin(name, src, approvedBuilds)
+      if (!r.ok && r.buildApprovals?.length) {
+        // pnpm 拦截到构建脚本：列清单等用户逐包确认（默认拒绝，不自动放行）
+        setPending({ kind: 'install', name, src, list: r.buildApprovals })
+        setMsg(r.message)
+        setMsgOk(false)
+        return
+      }
       setMsg(r.message)
       setMsgOk(r.ok)
       await refreshInstalled()
@@ -123,12 +143,30 @@ export default function PluginsPanel() {
       await refreshUpdates()
       await search(query)
     })
-  const doUpdate = (name: string): Promise<void> =>
-    doOp(name, () => window.dsh.updatePlugin(name), async () => {
-      await refreshInstalled()
-      await refreshUpdates()
-      await search(query)
-    })
+  const doUpdate = (name: string, approvedBuilds?: string[]): Promise<void> =>
+    doOp(
+      name,
+      async () => {
+        const r = await window.dsh.updatePlugin(name, approvedBuilds)
+        if (!r.ok && r.buildApprovals?.length) {
+          setPending({ kind: 'update', name, list: r.buildApprovals })
+        }
+        return r
+      },
+      async () => {
+        await refreshInstalled()
+        await refreshUpdates()
+        await search(query)
+      }
+    )
+  // 放行并重试：把用户确认的清单原样传回主进程
+  const approveAndRetry = async (): Promise<void> => {
+    const p = pending
+    if (!p) return
+    setPending(null)
+    if (p.kind === 'install') await preflightAndInstall(p.name, p.name, p.src ?? source, p.list)
+    else await doUpdate(p.name, p.list)
+  }
   const doCustomInstall = async (): Promise<void> => {
     const spec = customSpec.trim()
     if (!spec) return
@@ -195,6 +233,28 @@ export default function PluginsPanel() {
           }`}
         >
           {msg}
+        </div>
+      )}
+
+      {pending && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <div className="font-medium">需要放行构建脚本（默认拒绝）</div>
+          <p className="mt-1 text-xs text-amber-200/80">
+            以下依赖带有安装期构建脚本，放行 = 允许其在本机执行代码。请确认来源可信后再放行：
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 font-mono text-xs">
+            {pending.list.map((x) => (
+              <li key={x}>{x}</li>
+            ))}
+          </ul>
+          <div className="mt-2 flex gap-2">
+            <Button disabled={busy !== null} onClick={() => void approveAndRetry()}>
+              放行并重试
+            </Button>
+            <Button variant="ghost" onClick={() => setPending(null)}>
+              取消安装
+            </Button>
+          </div>
         </div>
       )}
 

@@ -28,9 +28,9 @@ export default function LogsPanel() {
         {logs.length === 0 ? (
           <span className="text-slate-600">暂无日志</span>
         ) : (
-          logs.map((l, i) => (
-            <div key={i} className="whitespace-pre-wrap break-all">
-              {l}
+          logs.map((l) => (
+            <div key={l.id} className="whitespace-pre-wrap break-all">
+              {l.text}
             </div>
           ))
         )}

@@ -49,7 +49,9 @@ export default function FileBridgePanel() {
     path: localStorage.getItem('dsh.fsb.wslPath') ?? '/home'
   }))
   const [jobs, setJobs] = useState<FsTransferProgress[]>([])
-  const [busy, setBusy] = useState(false)
+  // 活跃传输数（queued/copying）：传输是后台异步队列，「入队瞬间」的 busy 拦不住重复触发，
+  // 必须按进度事件派生的活跃数来防并发
+  const activeTransfers = jobs.filter((j) => j.phase === 'queued' || j.phase === 'copying').length
   const [tInput, setTInput] = useState('')
   const [tResult, setTResult] = useState<FsTranslateResult | null>(null)
   const [tError, setTError] = useState('')
@@ -179,7 +181,10 @@ export default function FileBridgePanel() {
     const dst = direction === 'to-wsl' ? wsl : win
     const sel = [...src.selected]
     if (sel.length === 0 || !dst.path) return
-    setBusy(true)
+    if (activeTransfers > 0) {
+      window.alert('已有传输任务进行中，请等待完成后再发起新传输')
+      return
+    }
     try {
       await window.dsh.fsbTransfer(
         sel.map((p) => ({
@@ -193,8 +198,6 @@ export default function FileBridgePanel() {
       )
     } catch (e) {
       window.alert(errMsg(e))
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -251,7 +254,10 @@ export default function FileBridgePanel() {
     e.preventDefault()
     const files = [...e.dataTransfer.files].map((f) => window.dsh.getPathForFile(f)).filter(Boolean)
     if (files.length === 0 || !wsl.path) return
-    setBusy(true)
+    if (activeTransfers > 0) {
+      window.alert('已有传输任务进行中，请等待完成后再发起新传输')
+      return
+    }
     try {
       await window.dsh.fsbTransfer(
         files.map((p) => ({
@@ -265,8 +271,6 @@ export default function FileBridgePanel() {
       )
     } catch (err) {
       window.alert((err as Error).message)
-    } finally {
-      setBusy(false)
     }
   }
 
