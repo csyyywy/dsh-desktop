@@ -20,26 +20,8 @@ import type { PluginInfo, PluginOpResult, PluginUpdateInfo } from '../shared/typ
 
 const PROFILE = 'web'
 
-/** npm 包名白名单：IPC 直传的 name 在拼进 pnpm argv 前必须校验——
- *  拒绝 `--` 开头（pnpm 旗标注入）与空白/引号/shell 元字符 */
-function assertSafeName(name: string): void {
-  if (typeof name !== 'string' || name.length > 214 || !/^[a-z0-9][a-z0-9._/@-]*$/i.test(name)) {
-    throw new Error(`非法的包名: ${String(name).slice(0, 80)}`)
-  }
-}
-
-/** 安装 spec 白名单（npm 包名或 git/https 地址）：拒绝 `--` 开头与元字符 */
-function assertSafeSpec(spec: string): void {
-  if (
-    typeof spec !== 'string' ||
-    spec.length === 0 ||
-    spec.length > 500 ||
-    spec.startsWith('-') ||
-    /[\s"'`$;&|<>]/.test(spec)
-  ) {
-    throw new Error(`非法的安装地址: ${String(spec).slice(0, 80)}`)
-  }
-}
+// 包名/spec 白名单：实现在 validate-pkg.ts（零依赖，含单测）
+import { assertSafeName, assertSafeSpec } from './validate-pkg'
 
 // 插件写操作互斥（1.2）：install/uninstall/update/restore 并发时会同时读写
 // 同一 profile（pnpm 竞态 + package.json 读改写丢失更新）。用 promise 链串行化。

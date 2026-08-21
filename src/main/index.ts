@@ -15,6 +15,7 @@ import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppU
 import { listInstalledPlugins, runPnpm, searchPlugins, preflightPluginInstall as preflightPluginFile, installPlugin, uninstallPlugin, checkPluginUpdates, updatePlugin } from './plugin-manager'
 import { createManualBackup, deleteBackup as deleteBackupFile, deleteManualBackup, listBackups, listManualBackups, resetHarnessData as resetHarnessDataFile, restoreBackup, restoreManualBackup } from './backup-manager'
 import { detectPluginRecovery } from './plugin-recovery'
+import { isSafePkgName } from './validate-pkg'
 import { registerIpc } from './ipc'
 import { createTray, refreshTrayMenu } from './tray'
 import { iconPath } from './paths'
@@ -724,9 +725,9 @@ const controller: Controller = {
   // ---------- v0.3.0：启动失败恢复（#81/#94/#96/#98） ----------
   recoveryUninstallRetry: (name) => serializeLifecycle(async () => {
     // 白名单：该通道经 main-window preload 暴露给 dsh Web UI 内容，只允许卸载
-    // 当前恢复态识别出的问题插件，且名称必须形如合法 npm 包名（防任意 pnpm remove）
+    // 当前恢复态识别出的问题插件，且名称必须形如合法 npm 包名（scoped 包 @ 开头合法）
     const allowed = currentRecovery?.offending.some((t) => t.name === name) ?? false
-    if (!allowed || !/^[a-z0-9][a-z0-9._/@-]*$/i.test(name)) {
+    if (!allowed || !isSafePkgName(name)) {
       return { ok: false, message: '该插件不在当前恢复清单中，已拒绝卸载' }
     }
     const wasRunning = isRunning() || wslIsRunning()
