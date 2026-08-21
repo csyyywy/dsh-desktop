@@ -69,26 +69,43 @@ function pruneBackups(): void {
   }
 }
 
-/** 安装/卸载前把整个 profile 目录快照到 backups/plugins/<时间戳>。
+/** 备份用的 profile 目录：优先 profiles/web（dsh 标准，--profile web），
+ *  兼容历史版本把 profile 直接放在 profiles 根的布局；找不到 package.json 时回退 web */
+function resolveBackupProfileDir(): string {
+  const web = profileDir()
+  if (existsSync(join(web, 'package.json'))) return web
+  const profiles = join(dshHome(), 'profiles')
+  if (existsSync(join(profiles, 'package.json'))) return profiles
+  return web
+}
+
+/** cpSync filter：排除 node_modules —— pnpm 布局含 symlink/坏链接（junction 指向缺失目标），
+ *  复制它既慢又不稳定（坏链接会让 tar/cp 报错）；插件真实状态由 package.json + pnpm-lock.yaml
+ *  + pnpm-workspace.yaml 表达，回退后用 pnpm install 按 lockfile 重建（版本确定）。 */
+function skipNodeModules(src: string): boolean {
+  return !/node_modules/.test(src)
+}
+
+/** 安装/卸载前把 profile 目录快照到 backups/plugins/<时间戳>（排除 node_modules）。
  *  调用方（controller）保证：WSL 模式下服务已停止后再调用（原子性）。
- *  注意 dereference:true —— pnpm 默认 isolated 布局的 node_modules 是 symlink/junction，
- *  不跟随地复制会在无「开发者模式/管理员」的机器上重建 symlink 时 EPERM，导致备份不落地（用户实测）。
- *  跟随复制得到自包含备份（不再指向源 .pnpm）。UNC cpSync 失败时回退发行版内 wsl cp -r。 */
+ *  UNC cpSync 失败时回退发行版内 wsl cp -r。 */
 export async function backupProfile(): Promise<void> {
-  const dir = profileDir()
-  if (!existsSync(join(dir, 'package.json'))) return
+  const dir = resolveBackupProfileDir()
+  if (!existsSync(join(dir, 'package.json'))) {
+    pushLog('自动备份跳过：profile 目录未初始化（' + dir + '）')
+    return
+  }
   const name = timestamp()
   const dest = join(backupsDir(), name)
   const linuxDir = profileLinuxDir()
   const linuxDest = backupsLinuxDir()
   try {
     mkdirSync(dest, { recursive: true })
-    cpSync(dir, dest, { recursive: true, dereference: true })
+    cpSync(dir, dest, { recursive: true, filter: skipNodeModules })
   } catch (e) {
     pushLog('备份 profile（UNC）失败: ' + (e as Error).message)
     if (loadSettings().backend === 'wsl' && linuxDir && linuxDest) {
-      // 回退：发行版内直接 cp。先清理同名目标（避免 cp -r 嵌套成 <ts>/web），
-      // 再拷内容（${linuxDir}/. → ${linuxDest}/${name}/）。路径统一 bashQuote。
+      // 回退：发行版内直接 cp（Linux 下 symlink 复制无权限问题）。先清理同名目标
       const res = await runWslBash(
         `rm -rf ${bashQuote(`${linuxDest}/${name}`)} && mkdir -p ${bashQuote(`${linuxDest}/${name}`)} && cp -r ${bashQuote(`${linuxDir}/.`)} ${bashQuote(`${linuxDest}/${name}/`)}`,
         { silent: true }
@@ -98,6 +115,7 @@ export async function backupProfile(): Promise<void> {
       pushLog('备份 profile 失败: ' + (e as Error).message)
     }
   }
+  pushLog(`自动备份已创建: ${dest}`)
   pruneBackups()
 }
 
@@ -119,11 +137,12 @@ export function deleteBackup(name: string): PluginOpResult {
   return { ok: true, message: `已删除备份 ${name}` }
 }
 
-/** 回退自动快照：staging 拷贝 + 原子交换，失败回滚；UNC 失败回退发行版内 wsl cp */
+/** 回退自动快照：staging 拷贝 + 原子交换，失败回滚；UNC 失败回退发行版内 wsl cp。
+ *  备份不含 node_modules（见 backupProfile），依赖重建由 controller 调 pnpm install 完成。 */
 export async function restoreBackup(name: string): Promise<PluginOpResult> {
   if (!BACKUP_NAME_RE.test(name)) return { ok: false, message: '非法的备份名称' }
   const src = join(backupsDir(), name)
-  const dir = profileDir()
+  const dir = resolveBackupProfileDir()
   if (!existsSync(src)) return { ok: false, message: '备份不存在' }
   const staging = dir + '.restore'
   const oldDir = dir + '.old'
@@ -131,8 +150,7 @@ export async function restoreBackup(name: string): Promise<PluginOpResult> {
     rmSync(staging, { recursive: true, force: true })
     rmSync(oldDir, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
-    // dereference:true 与 backupProfile 一致——备份是自包含真实文件，恢复同样跟随复制
-    cpSync(src, staging, { recursive: true, dereference: true })
+    cpSync(src, staging, { recursive: true })
     if (existsSync(dir)) renameSync(dir, oldDir)
     renameSync(staging, dir)
     rmSync(oldDir, { recursive: true, force: true })
@@ -187,22 +205,24 @@ export async function createManualBackup(label = ''): Promise<PluginOpResult> {
     const ldir = manualLinuxDir()
     if (!base || !home || !d || !ldir) return { ok: false, message: 'WSL 后端未部署' }
     const name = clean ? `${ts}-${clean}.tar.gz` : `${ts}.tar.gz`
+    // --exclude=*node_modules*：跳过 pnpm 布局的 symlink/坏链接（坏链接会让 tar 报 Cannot stat）
     const res = await runWslBash(
-      `mkdir -p ${bashQuote(ldir)} && tar czf ${bashQuote(`${ldir}/${name}`)} -C ${bashQuote(dirname(home))} ${bashQuote(basename(home))}`,
+      `mkdir -p ${bashQuote(ldir)} && tar czf ${bashQuote(`${ldir}/${name}`)} --exclude='*node_modules*' -C ${bashQuote(dirname(home))} ${bashQuote(basename(home))}`,
       { distro: d, timeoutMs: 10 * 60 * 1000 }
     )
     if (res.code !== 0) return { ok: false, message: '创建 WSL 手动备份失败: ' + (res.stderr || res.stdout).trim() }
     await pruneManualWsl()
-    return { ok: true, message: `已创建手动备份 ${name}` }
+    return { ok: true, message: `已创建手动备份 ${name}（不含 node_modules，回退时自动重建依赖）` }
   }
   const name = clean ? `${ts}-${clean}.zip` : `${ts}.zip`
   const dest = join(manualDir(), name)
   mkdirSync(manualDir(), { recursive: true })
   const home = dshHome()
-  const r = await runTar(['-a', '-c', '-f', dest, '-C', dirname(home), basename(home)])
+  // --exclude=*node_modules*：同上，坏链接不再导致 tar 失败；依赖回退时重建
+  const r = await runTar(['-a', '-c', '-f', dest, '--exclude=*node_modules*', '-C', dirname(home), basename(home)])
   if (r.code !== 0) return { ok: false, message: '创建手动备份失败: ' + r.output }
   pruneManual()
-  return { ok: true, message: `已创建手动备份 ${name}` }
+  return { ok: true, message: `已创建手动备份 ${name}（不含 node_modules，回退时自动重建依赖）` }
 }
 
 function parseTimestamp(name: string): number {
@@ -255,7 +275,7 @@ async function snapshotHome(tag: string): Promise<PluginOpResult> {
   mkdirSync(dest, { recursive: true })
   if (!existsSync(home)) return { ok: true, message: '（数据目录不存在，跳过快照）' }
   try {
-    cpSync(home, dest, { recursive: true, dereference: true })
+    cpSync(home, dest, { recursive: true, filter: skipNodeModules })
     pushLog(`快照 dsh 数据（${tag}）: backups/reset/${timestamp().slice(0, 8)}…`)
     return { ok: true, message: '' }
   } catch (e) {

@@ -422,6 +422,21 @@ async function applySettings(patch: Partial<AppSettings>): Promise<AppSettings> 
   return next
 }
 
+/** 回退/恢复后按 lockfile 重建 profile 依赖（备份不含 node_modules）。成功返回 null，失败返回错误说明 */
+async function rebuildProfileDeps(): Promise<string | null> {
+  try {
+    const r = await runPnpm(['install'])
+    if (r.code !== 0) {
+      const last = r.output.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
+      return '依赖重建失败: ' + (last || `exit ${r.code}`)
+    }
+    pushLog('回退后依赖已按 lockfile 重建')
+    return null
+  } catch (e) {
+    return '依赖重建异常: ' + (e as Error).message
+  }
+}
+
 const controller: Controller = {
   getStatus: () => buildStatus(),
   start: () => serializeLifecycle(startDsh),
@@ -611,29 +626,44 @@ const controller: Controller = {
   listBackups: async () => listBackups(),
   restoreBackup: (name) => serializeLifecycle(async () => {
     if (loadSettings().backend === 'wsl') {
-      // 回退在停服期间执行（profile 快照一致性），完成后恢复原运行状态
+      // 回退在停服期间执行（profile 快照一致性），完成后按 lockfile 重建依赖并恢复原运行状态
       const wasRunning = wslIsRunning()
       if (wasRunning) await stopServer()
       const r = await restoreBackup(name)
+      let note = ''
+      if (r.ok) {
+        const e = await rebuildProfileDeps()
+        if (e) note = '；' + e
+      }
       if (r.ok && wasRunning) await restartServer(onServerExit)
-      return r
+      return { ...r, message: r.message + note }
     }
     const r = await restoreBackup(name)
+    let note = ''
+    if (r.ok) {
+      const e = await rebuildProfileDeps()
+      if (e) note = '；' + e
+    }
     if (r.ok && isRunning()) await restartForPluginChange()
-    return r
+    return { ...r, message: r.message + note }
   }),
   deleteBackup: (name) => deleteBackupFile(name),
   // ---------- v0.3.0：备份独立界面 + 手动存档 ----------
   backupCreateManual: (label) => serializeLifecycle(() => createManualBackup(label)),
   backupListManual: async () => listManualBackups(),
   backupRestoreManual: (name) => serializeLifecycle(async () => {
-    // 恢复手动存档：停服 → 恢复（内部已先快照当前环境）→ 重新启动
+    // 恢复手动存档：停服 → 恢复（内部已先快照当前环境）→ 重建依赖 → 重新启动
     const wasRunning = isRunning() || wslIsRunning()
     if (wasRunning) await stopServer()
     const r = await restoreManualBackup(name)
+    let note = ''
+    if (r.ok) {
+      const e = await rebuildProfileDeps()
+      if (e) note = '；' + e
+    }
     if (r.ok) await startDsh()
     broadcastStatus()
-    return r
+    return { ...r, message: r.message + note }
   }),
   backupDeleteManual: (name) => deleteManualBackup(name),
   // ---------- v0.3.0：启动失败恢复（#81/#94/#96/#98） ----------
