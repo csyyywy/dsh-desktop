@@ -91,6 +91,20 @@ function sha256File(path) {
   })
 }
 
+/** 瘦身（v0.3.4）：删除运行时用不到的附属物（约 4MB）。
+ *  运行时只需要 node.exe + node_modules/npm/bin/npm-cli.js（dsh-manager 的安装通道），
+ *  其余文档/手册/Corepack 均可裁掉。幂等，已存在目录重复执行也安全。 */
+function pruneRuntime() {
+  const rm = (p) => rmSync(p, { recursive: true, force: true })
+  rm(join(destDir, 'corepack'))
+  rm(join(destDir, 'node_modules', 'npm', 'docs'))
+  rm(join(destDir, 'node_modules', 'npm', 'man'))
+  rm(join(destDir, 'CHANGELOG.md'))
+  rm(join(destDir, 'README.md'))
+  rm(join(destDir, 'node_modules', 'npm', 'CHANGELOG.md'))
+  console.log('[download-node] 已裁剪 corepack / npm 文档手册等附属物')
+}
+
 async function main() {
   if (existsSync(nodeExe)) {
     console.log('[download-node] 已存在，跳过：', nodeExe)
@@ -118,6 +132,8 @@ async function main() {
     }
     console.log('[download-node] 完成：', destDir)
   }
+
+  pruneRuntime()
 
   // Linux x64（WSL 后端）：tar.xz 原样存 resources/node-linux.tar.xz
   if (process.env.DSH_SKIP_NODE_LINUX === '1') {

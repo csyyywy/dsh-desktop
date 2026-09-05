@@ -33,9 +33,19 @@ function curlDownload(url, outPath, label = '文件') {
   console.log(`[download-pnpm] ${label} 完成: ${outPath} (${(size / 1024 / 1024).toFixed(1)} MB)`)
 }
 
+/** 瘦身（v0.3.4）：运行时只需要 bin/pnpm.cjs + dist/，删除 tarball 带出的
+ *  artifacts/（构建产物缓存，源码中无任何引用，约 18MB）与 CHANGELOG。幂等。 */
+function pruneRuntime() {
+  const rm = (p) => rmSync(p, { recursive: true, force: true })
+  rm(join(destDir, 'artifacts'))
+  rm(join(destDir, 'CHANGELOG.md'))
+  console.log('[download-pnpm] 已裁剪 artifacts / CHANGELOG')
+}
+
 async function main() {
   if (existsSync(destEntry)) {
     console.log('[download-pnpm] 已存在，跳过：', destDir)
+    pruneRuntime()
     return
   }
   const tarballUrl = `https://registry.npmjs.org/pnpm/-/pnpm-${PNPM_VERSION}.tgz`
@@ -87,6 +97,7 @@ async function main() {
   if (!existsSync(destEntry)) {
     throw new Error(`解压后 pnpm 入口不存在: ${destEntry}`)
   }
+  pruneRuntime()
   console.log('[download-pnpm] 完成：', destDir)
 }
 

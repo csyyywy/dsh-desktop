@@ -10,7 +10,7 @@ import type { Controller } from './controller'
 import { loadSettings, saveSettings, dshHome, dataDir, redactSettingsForRenderer } from './settings'
 import { pushLog, getLogs, onLog } from './log'
 import { hasBundledDsh, installDsh, isComplete, isInstalled, installedVersion, latestVersion, listVersions, resolveRuntime, restoreBundledDsh, bundledDshVersion, installDshWsl, wslIsComplete, wslInstalledVersion } from './dsh-manager'
-import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl, getLastStartupStderr, getPortNote } from './server'
+import { startServer, stopServer, restartServer, isRunning, wslIsRunning, wslStale, forceCleanupWsl, getLastStartupStderr, getPortNote, getLaunchUrl } from './server'
 import { checkAppUpdate, downloadedUpdatePath, downloadAppUpdate as downloadAppUpdateFile } from './updater'
 import { listInstalledPlugins, runPnpm, searchPlugins, preflightPluginInstall as preflightPluginFile, installPlugin, uninstallPlugin, checkPluginUpdates, updatePlugin } from './plugin-manager'
 import { createManualBackup, deleteBackup as deleteBackupFile, deleteManualBackup, listBackups, listManualBackups, resetHarnessData as resetHarnessDataFile, restoreBackup, restoreManualBackup } from './backup-manager'
@@ -143,7 +143,7 @@ function createMain(): BrowserWindow {
       reloadMain()
     }
   })
-  void win.loadURL(`http://127.0.0.1:${webPort()}`)
+  void win.loadURL(takeMainEntryUrl())
   guardNavigation(win)
   win.webContents.on('did-finish-load', () => {
     webUIStale = false
@@ -160,9 +160,23 @@ function createMain(): BrowserWindow {
   return win
 }
 
-/** 主窗口目标 URL（按当前后端端口动态计算） */
+/** 主窗口目标 URL（按当前后端端口动态计算，裸地址，用于前缀比对与展示） */
 function mainTargetUrl(): string {
   return `http://127.0.0.1:${webPort()}`
+}
+
+// dsh ≥ 0.1.2 的 Web UI 认证（v0.3.4）：launch token 只随每次服务启动后的首次
+// 导航携带——dsh 验证通过即铸造持久签名 cookie（存于 Electron 默认 session，绑定
+// Host、默认 30 天），之后裸地址即可访问；同一 token 重复导航没有意义（一次性语义）。
+// 服务重启会产出新 token（与已消费值必然不同，自动重新可用），无需手动重置。
+let consumedTokenUrl: string | null = null
+
+/** 主窗口导航地址：优先未消费的 launch token URL，否则裸地址（旧版 dsh / cookie 已生效） */
+function takeMainEntryUrl(): string {
+  const lu = getLaunchUrl()
+  const entry = lu && lu !== consumedTokenUrl ? lu : mainTargetUrl()
+  if (entry !== mainTargetUrl()) consumedTokenUrl = entry
+  return entry
 }
 
 /**
@@ -177,7 +191,7 @@ function reloadMain(): void {
   // #96：恢复进行中不导航到破损 URL（留在仪表盘/恢复界面）
   if (recoveryPending) return
   webUIStale = false
-  void mainWindow.loadURL(mainTargetUrl())
+  void mainWindow.loadURL(takeMainEntryUrl())
 }
 
 function openMain(): void {

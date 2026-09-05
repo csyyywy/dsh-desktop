@@ -19,6 +19,14 @@ extraResources:
       - "dsh-bundle/**/*"
 
 asar: true
+# 语言包只保留中文/英文（全量 55 个 .pak 约 47MB，裁剪后约 2MB）
+electronLanguages:
+  - zh-CN
+  - en-US
+# 压缩率拉满：NSIS/便携产物更小，构建耗时略增
+compression: maximum
+# 打包后钩子：删除本应用用不到的 Electron 组件（见 scripts/after-pack.cjs）
+afterPack: scripts/after-pack.cjs
 
 win:
   icon: resources/icons/icon.png

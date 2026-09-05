@@ -10,13 +10,13 @@
 
 ## 功能
 
-- 首次启动从内置包恢复 dsh（**无需联网安装**），随后启动 `dsh web` 并打开原生窗口。
+- 首次启动从内置包恢复 dsh（**无需联网安装**，内置 **0.1.2-rc.1**），随后启动 `dsh web` 并打开原生窗口。dsh ≥ 0.1.2 的 Web 界面一次性 token 认证由外壳自动处理（从服务输出解析 launch token，持久 cookie 免重复认证）。
 - 系统托盘：打开 Harness / 仪表盘 / 启动·停止 / 退出；关闭窗口最小化到托盘、服务后台常驻。
 - 仪表盘：状态 / 设置（端口、工作区、API Key、版本、开机自启、**自定义背景**）/ 更新（一键升级 + 历史版本回滚）/ 日志 / **插件管理器** / **备份与回退**（独立面板，手动存档 + 自动快照）。
 - **插件管理器**：浏览/搜索官方插件仓库（GitHub topic `dsh-plugin` / npm `dsh-plugin`，相关性过滤排序），一键安装（git 安装）/卸载；**安装前冲突预检**（同名/重复注册先报告）；内置 pnpm 离线可用；每次安装/卸载前自动备份。
 - **端口自愈**：端口被本应用残留进程占用时自动释放；被其他程序占用时自动切换并保存。
 - **WSL 后端**（可选）：一键部署发行版内运行环境，dsh 跑在 WSL 里、窗口仍在本机；「从本机同步」迁移配置/插件/会话。
-- **文件桥**：Windows ↔ WSL 双向文件浏览/复制/移动/重命名/删除与路径转换。
+- ~~**文件桥**：Windows ↔ WSL 双向文件浏览/复制/移动/重命名/删除与路径转换~~（v0.3.4 暂时下架，代码保留，`Dashboard.tsx` 的 `SHOW_FILE_BRIDGE` 开关可恢复）。
 - **启动失败恢复**：自动识别问题插件 → 一键「卸载并重试」；支持「重置数据」（备份后重建）；内部加载器故障也能映射回真实插件包。
 
 ## 目录结构
@@ -55,7 +55,8 @@ npm run pack:win  # 产出 dist/ 下的三种形态
 | `dist/DeepSeek-Harness-<ver>-setup.exe` | NSIS 安装器（开始菜单/桌面快捷方式/卸载） |
 | `dist/DeepSeek-Harness-<ver>-portable.exe` | 单文件便携版 |
 
-发布时另打绿色 zip：`tar -a -c -f dist/DeepSeek-Harness-<ver>-portable-win-x64.zip -C dist/win-unpacked .`（顶层即文件本体）。
+发布时另打绿色 zip（`tar -a` 打 zip 实为存储不压缩，必须用自带 7z，`-mx=9` 体积最小）：
+`node_modules/electron-winstaller/vendor/7z-x64.exe a -tzip -mx=9 dist/DeepSeek-Harness-<ver>-portable-win-x64.zip dist/win-unpacked`。
 
 > 首次打包需下载 Electron 与便携 Node，耗时较长；国内网络下 `.npmrc` 与 `pack` 脚本已配置 npmmirror 镜像。
 

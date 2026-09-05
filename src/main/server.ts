@@ -5,9 +5,10 @@
 //    Windows 访问 WSL 内 dsh 的唯一通道是 WSL2 localhost 转发（dsh 仅监听
 //    127.0.0.1，--host 0.0.0.0 被官方拒绝），因此绝不 terminate 发行版。
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import http from 'node:http'
-import { dshBin, diag, resolveRuntime } from './dsh-manager'
+import { dshBin, diag, installedVersion, resolveRuntime, wslInstalledVersion } from './dsh-manager'
+import { dshHasWebAuth, extractLaunchUrl } from './launch-url'
 import { dshHome, loadSettings, windowsApiKey } from './settings'
 import { pushLog } from './log'
 import { applyPortResolution, currentPortNote, resolvePortWithSelfHeal } from './port-util'
@@ -18,6 +19,55 @@ import {
 
 let proc: ChildProcess | null = null
 let lastExit: { code: number | null; signal: string | null } | null = null
+
+// dsh ≥ 0.1.2 的 Web UI launch token（v0.3.4，机制见 launch-url.ts 头注释）：
+// 每次启动后从 stdout（本机）/ 发行版内日志（WSL）解析带 token 的地址，
+// 主窗口首次导航携带；进程退出/停止即失效。
+let launchUrl: string | null = null
+
+export function getLaunchUrl(): string | null {
+  return launchUrl
+}
+
+function setLaunchUrl(url: string | null): void {
+  if (launchUrl === url) return
+  launchUrl = url
+  if (url) pushLog('已获取 dsh Web UI launch token')
+}
+
+/** 端口就绪后短暂等待 token 出现在 stdout（与监听几乎同时打印，通常毫秒级） */
+async function waitForLaunchUrl(timeoutMs: number): Promise<void> {
+  const start = Date.now()
+  while (!launchUrl && Date.now() - start < timeoutMs) {
+    await sleep(150)
+  }
+}
+
+/** WSL 模式 token 等待：从启动前记录的日志偏移起轮询读取（UNC 容错）。
+ *  日志为追加模式且跨启动累积，必须只读本次新增内容，防止拿到上一次进程的陈旧 token。 */
+async function waitForWslLaunchUrl(uncLog: string, fromOffset: number, timeoutMs: number): Promise<void> {
+  const start = Date.now()
+  while (!launchUrl && Date.now() - start < timeoutMs) {
+    await sleep(300)
+    try {
+      if (!existsSync(uncLog)) continue
+      const size = statSync(uncLog).size
+      if (size <= fromOffset) continue
+      const len = Math.min(size - fromOffset, 8 * 1024 * 1024)
+      const buf = Buffer.alloc(len)
+      const fd = openSync(uncLog, 'r')
+      try {
+        readSync(fd, buf, 0, len, fromOffset)
+      } finally {
+        closeSync(fd)
+      }
+      const u = extractLaunchUrl(buf.toString('utf8'))
+      if (u) setLaunchUrl(u)
+    } catch {
+      /* UNC 读取抖动，容错重试 */
+    }
+  }
+}
 
 // 最近一次启动尝试的 dsh stderr（v0.3.0）：供插件冲突恢复检测（plugin-recovery）
 // 解析「Failed to load plugins / duplicate loader entry / duplicate prefix route」等模式。
@@ -179,21 +229,26 @@ function waitForPort(port: number, timeoutMs = 120000, alive: () => boolean | Pr
             finish(() => resolve())
             return
           }
-          // WSL 模式：必须确认响应是 dsh 页面（防 Windows 侧同端口服务误判为已启动）。
-          // 内容一旦命中标记立即成功；读完仍不匹配则重试；超 64KB 截断按超时路径兜底。
+          // WSL 模式：必须确认响应来自 dsh（防 Windows 侧同端口服务误判为已启动）。
+          // dsh ≥ 0.1.2 对无 token 的 GET / 返回 401（响应体 dsh web authentication
+          // required…）——这本身就是 dsh 存在的强信号；200 沿用页面内容标记校验，
+          // 其余状态码（含内容不匹配）重试，超 64KB 截断按超时路径兜底。
+          const status = res.statusCode ?? 0
           let body = ''
           res.on('data', (b: Buffer) => {
             if (settled) return
             body += b.toString()
-            if (/(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) {
-              finish(() => resolve())
-              res.destroy()
-              return
-            }
             if (body.length > 65536) req.destroy()
           })
           res.on('end', () => {
             if (settled) return
+            const ok =
+              (status === 200 && /(DeepSeek|Harness|dsh)/i.test(body.slice(0, 65536))) ||
+              (status === 401 && /dsh web authentication required/i.test(body))
+            if (ok) {
+              finish(() => resolve())
+              return
+            }
             setTimeout(tick, 500)
           })
         })
@@ -251,6 +306,8 @@ async function startWslServer(onExit?: (code: number | null) => void): Promise<v
   if (wslRunning) return
   // 任何一步失败都不应使用上一次启动的陈旧 stderr 做恢复归因
   lastStartupStderr = []
+  // 旧 token 随上次进程失效，启动前重置（新 token 从本次日志新增内容解析）
+  launchUrl = null
   const settings = loadSettings()
   const distro = currentDistro()
   if (!distro) throw new Error('未配置 WSL 发行版，请先在仪表盘「运行后端」面板部署')
@@ -273,6 +330,10 @@ async function startWslServer(onExit?: (code: number | null) => void): Promise<v
   // 工作区：与会话 cwd 适配共用同一解析（settings.workspace 或 wslHome）
   const ws = wslWorkspaceLinux()
   if (!ws) throw new Error('WSL 工作区未配置')
+  // 记录启动前日志大小：launch token 只从本次启动新增的日志内容解析
+  // （`>> logfile` 追加模式跨启动累积，重启后旧 token 仍在文件里）
+  const logUnc = toUnc(distro, logfile)
+  const logOffset = existsSync(logUnc) ? statSync(logUnc).size : 0
   pushLog(`启动 WSL dsh: ${node} ${bin} --profile web --port ${port}（${distro}）`)
   // 关键坑（PoC 实测）：wsl 的 bash 是进程组长 → setsid 必然 fork → `$!` 是已退出的
   // 父进程 pid，不能当进程组 id。因此启动后由 pgrep 定位实际 dsh 进程、ps 读取其
@@ -308,6 +369,10 @@ async function startWslServer(onExit?: (code: number | null) => void): Promise<v
     const info = await readPidfile(pidfile)
     wslPidCache = info.pid
     await waitForPort(port, 120000, wslAliveCheck, true)
+    // dsh ≥ 0.1.2 的 Web UI 需要 launch token：从本次新增日志解析（见 launch-url.ts）
+    if (dshHasWebAuth(wslInstalledVersion())) {
+      await waitForWslLaunchUrl(logUnc, logOffset, 5000)
+    }
   } catch (e) {
     wslRunning = false
     wslPidCache = null
@@ -347,6 +412,7 @@ async function stopWslServer(): Promise<void> {
   }
   wslRunning = false
   wslPidCache = null
+  launchUrl = null
 }
 
 /** 强制清理残留进程（UI「强制清理」按钮） */
@@ -371,6 +437,8 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
   if (isRunning()) return
   // 尽早重置：dshBin 缺失等早期抛错也不得沿用上次的陈旧 stderr 做恢复归因
   lastStartupStderr = []
+  // 旧 token 随上次进程失效，启动前重置（新 token 从本次 stdout 解析）
+  launchUrl = null
   const settings = loadSettings()
   if (!existsSync(dshBin())) throw new Error('dsh 尚未安装，请先在仪表盘中安装')
   const rt = resolveRuntime()
@@ -399,6 +467,7 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
     procSettled = true
     const p = proc
     proc = null
+    launchUrl = null
     if (p) onExit?.(code)
   }
   proc.on('error', (e) => {
@@ -409,7 +478,13 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
     settle(-1)
   })
   lastExit = null
-  proc.stdout?.on('data', (b) => pushLog(b.toString()))
+  proc.stdout?.on('data', (b) => {
+    const text = b.toString()
+    pushLog(text)
+    // dsh ≥ 0.1.2：从 stdout 解析 Web UI launch token URL（见 launch-url.ts）
+    const u = extractLaunchUrl(text)
+    if (u) setLaunchUrl(u)
+  })
   proc.stderr?.on('data', (b) => {
     const text = b.toString()
     pushLog(text)
@@ -424,6 +499,12 @@ export async function startServer(onExit?: (code: number | null) => void): Promi
   })
   proc.on('close', (code) => settle(code))
   await waitForPort(port)
+  // dsh ≥ 0.1.2 的 Web UI 需要 launch token：端口就绪后短暂等待 stdout 出现
+  // token URL（与监听几乎同时打印），避免主窗口先拿裸地址吃 401；旧版 dsh 无
+  // token 认证，按安装版本判断直接跳过、零等待
+  if (dshHasWebAuth(installedVersion())) {
+    await waitForLaunchUrl(3000)
+  }
 }
 
 /** Windows 进程存活检测：signal 0 = 仅查存在性；EPERM 表示存在但无权信号（也算活着） */
@@ -443,6 +524,7 @@ export async function stopServer(): Promise<void> {
   }
   const p = proc
   proc = null
+  launchUrl = null
   if (!p) return
   if (process.platform === 'win32' && p.pid) {
     // taskkill 必须等待完成 + 轮询进程消失（B4）：restart = stop 后立即 start，

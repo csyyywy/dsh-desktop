@@ -25,7 +25,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const destDir = join(root, 'resources', 'dsh-bundle')
 // 固化默认版本（与 release notes 声称的内置版本一致）：`latest` 会让同一提交
 // 在不同时间打出不同产物，破坏可复现构建。升级内置版本时显式传 DSH_BUNDLE_VERSION。
-const DEFAULT_DSH_VERSION = '0.1.0-rc.8'
+// v0.3.4：0.1.0-rc.8 → 0.1.2-rc.1（npm next 通道；0.1.2 起 Web UI 启用 launch token
+// 认证，外壳 v0.3.4 已支持——server.ts 解析 stdout/WSL 日志中的 token URL）。
+const DEFAULT_DSH_VERSION = '0.1.2-rc.1'
 const version = process.env.DSH_BUNDLE_VERSION || DEFAULT_DSH_VERSION
 const nodeExe = join(root, 'resources', 'node', 'node.exe')
 const pnpmCjs = join(root, 'resources', 'pnpm', 'bin', 'pnpm.cjs')
@@ -95,10 +97,21 @@ function main() {
   verifyBundle(destDir)
 }
 
-/** 瘦身：上游 node_modules 的 sourcemap（*.map，实测约 34MB/6363 个）不进发行包 */
-function pruneMaps(dir) {
-  if (!existsSync(dir)) return
-  let removed = 0
+/**
+ * 瘦身（v0.3.4 扩展）：上游 node_modules 里不进发行包的内容。
+ *  - sourcemap（*.map，实测约 34MB/6300+ 个）
+ *  - 原生模块调试符号（*.pdb，node-pty prebuilds 4 个共约 20MB，非运行文件）
+ *  - node-pty 非 win32-x64 的预编译（bundle 仅用于 Windows 本机恢复；WSL 后端在
+ *    发行版内自行安装 Linux 版，win32-arm64 亦不被 x64 产物使用，约 12MB）
+ *  - node-pty third_party 的 arm64 conpty 副本（约 1.1MB）
+ *  win32-x64 的 conpty.dll / OpenConsole.exe / *.node 全部保留（运行必需）；
+ *  finalize 后 verifyBundle 会实际加载 koffi/node-pty 并运行 dsh --version，裁坏即构建失败。
+ */
+function pruneBundle(nm) {
+  if (!existsSync(nm)) return
+  let maps = 0
+  let pdbs = 0
+  let prebuilds = 0
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name)
@@ -108,24 +121,46 @@ function pruneMaps(dir) {
       }
       if (e.name.endsWith('.map')) {
         rmSync(p, { force: true })
-        removed++
+        maps++
+      } else if (e.name.endsWith('.pdb')) {
+        rmSync(p, { force: true })
+        pdbs++
       }
     }
   }
-  walk(dir)
-  console.log(`[bundle-dsh] 已清理 ${removed} 个 sourcemap 文件`)
+  walk(nm)
+  const ptyPrebuilds = join(nm, 'node-pty', 'prebuilds')
+  if (existsSync(ptyPrebuilds)) {
+    for (const e of readdirSync(ptyPrebuilds, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name === 'win32-x64') continue
+      rmSync(join(ptyPrebuilds, e.name), { recursive: true, force: true })
+      prebuilds++
+    }
+  }
+  const conptyBase = join(nm, 'node-pty', 'third_party')
+  if (existsSync(conptyBase)) {
+    const rmIfDir = (d) => {
+      if (existsSync(d)) rmSync(d, { recursive: true, force: true })
+    }
+    for (const ver of readdirSync(conptyBase, { withFileTypes: true })) {
+      if (!ver.isDirectory()) continue
+      rmIfDir(join(conptyBase, ver.name, 'win10-arm64'))
+    }
+  }
+  console.log(`[bundle-dsh] 已清理 ${maps} 个 sourcemap、${pdbs} 个 pdb、${prebuilds} 个非 win32-x64 预编译目录`)
 }
 
 /** 把 tmp 的 node_modules 等搬进 resources/dsh-bundle（构建产物目录） */
 function finalize(tmpDir, destDir) {
   rmSync(destDir, { recursive: true, force: true })
   mkdirSync(destDir, { recursive: true })
-  for (const entry of ['node_modules', 'package.json', 'package-lock.json', 'pnpm-lock.yaml']) {
+  // pnpm-lock.yaml 不复制（v0.3.4：运行时无用，0.55MB）
+  for (const entry of ['node_modules', 'package.json', 'package-lock.json']) {
     const s = join(tmpDir, entry)
     if (existsSync(s)) cpSync(s, join(destDir, entry), { recursive: true })
   }
   rmSync(tmpDir, { recursive: true, force: true })
-  pruneMaps(join(destDir, 'node_modules'))
+  pruneBundle(join(destDir, 'node_modules'))
   console.log('[bundle-dsh] 完成：', destDir)
 }
 

@@ -15,11 +15,16 @@ import BackupPanel from './panels/BackupPanel'
 
 type Tab = 'status' | 'settings' | 'update' | 'logs' | 'plugins' | 'backups' | 'backend' | 'files'
 
+// v0.3.4：文件桥暂时下架。只屏蔽入口与挂载（面板/IPC/主进程代码原样保留），
+// 恢复时改回 true 即可。注意 TABS 与挂载块必须同时受开关控制——面板是常驻
+// 挂载，只藏 tab 不摘挂载的话组件仍会订阅 fsb:progress 并发起目录加载。
+const SHOW_FILE_BRIDGE = false
+
 const TABS: { id: Tab; label: string }[] = [
   { id: 'status', label: '状态' },
   { id: 'settings', label: '设置' },
   { id: 'backend', label: '运行后端' },
-  { id: 'files', label: '文件桥' },
+  ...(SHOW_FILE_BRIDGE ? [{ id: 'files' as Tab, label: '文件桥' }] : []),
   { id: 'update', label: '更新' },
   { id: 'logs', label: '日志' },
   { id: 'plugins', label: '插件' },
@@ -77,9 +82,11 @@ export default function Dashboard() {
         <div className={tab === 'backend' ? '' : 'hidden'}>
           <BackendPanel />
         </div>
-        <div className={tab === 'files' ? '' : 'hidden'}>
-          <FileBridgePanel />
-        </div>
+        {SHOW_FILE_BRIDGE && (
+          <div className={tab === 'files' ? '' : 'hidden'}>
+            <FileBridgePanel />
+          </div>
+        )}
         <div className={tab === 'update' ? '' : 'hidden'}>
           <UpdatePanel />
         </div>

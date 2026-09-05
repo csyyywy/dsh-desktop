@@ -2,7 +2,26 @@
 
 > 本文档供接续开发者 / agent 接手 **dsh-desktop** 项目使用。
 > 记录了项目现状、本机环境、关键机制与踩过的坑。
-> 最后更新：2026-08-21（v0.3.0 审查修复批次后）。
+> 最后更新：2026-09-05（v0.3.4 批次后）。
+
+## v0.3.4 批次（2026-09-05）：dsh 0.1.2 token 认证修复 / 文件桥下架 / 体积瘦身
+
+- **dsh ≥ 0.1.2 Web UI 认证修复（401）**：官方 v0.1.2-alpha.1 起给 Web 界面启用「链接中一次性 token + 持久签名 cookie」认证（release note：「网络访问 Web 界面时启用链接中的一次性 token 认证鉴权」），裸地址 `GET /` 一律 401（响应体 `dsh web authentication required; reopen the URL printed by dsh web.`）——这是「窗口打开通过不了校验」的根因。外壳对策（`launch-url.ts` + `server.ts` + `index.ts`）：
+  - dsh 启动后会把带 token 的地址打印到输出（本机 = stdout 管道；WSL = 发行版内日志 `>> logs/dsh.log`）：`dsh web: http://127.0.0.1:<port>/?token=<token>`（行尾可能带 `(LAN: …)` 后缀）。`extractLaunchUrl` 取**最后一条**锚定 `http://127.0.0.1:` 的匹配（LAN 地址不认）。
+  - 本机 `startServer` 在 `waitForPort` 后按安装版本判断（`dshHasWebAuth`：三元组 ≥ 0.1.2）决定是否等待 token 出现（≤3s，150ms 轮询）；旧版 dsh 零等待。WSL 同理（≤5s），**只从启动前记录的日志偏移读新增内容**（日志追加跨启动累积，防拿陈旧 token）。
+  - 主窗口导航：`takeMainEntryUrl()` 优先「未消费的 launchUrl」，否则裸地址。首次带 token 导航 → dsh 303 到 `/` 并铸造签名 cookie（`dsh-auth-<sha256(host)>`，绑定 Host authority、Max-Age 30 天、HttpOnly，存 Electron 默认 session 持久化），之后裸地址即可；`consumedTokenUrl` 记录已用 token（服务重启产出新 token 自动重新可用）。`mainTargetUrl()` 裸地址仍用于 `openMain` 的 startsWith 判断（303 后的 URL 可匹配，不会反复重导航）。
+  - stop/进程退出/启动前都会重置 launchUrl。`waitForPort` 的 WSL 内容校验同步修正：200 + 页面标记 **或 401 + `dsh web authentication required`** 均判 dsh 就绪（401 本身是 dsh 存在的强信号，原 `/DeepSeek|Harness|dsh/i` 规则会被 401 响应体误判）。
+  - 兜底：主窗口 preload 错误卡新增 `dsh web authentication required` 触发项，注入「重试连接」按钮（复用 `recovery:restart`，重启服务重新解析 token）。
+  - 实测链路（0.1.2-rc.1 真机）：token GET / → 303 + Set-Cookie → 裸地址带 cookie 200；dev 首启全流程（bundle 恢复 → 启动 → token 导航进 Web UI）通过。
+- **内置 dsh 更新**：bundle 0.1.0-rc.8 → **0.1.2-rc.1**（npm `next` 通道；npm `latest` 当时为 0.1.1-rc.2，无 token 认证；GitHub 最新 release 为 dsh-v0.1.2-alpha.1。0.1.2 含会话折叠/Token 用量/subagent 模型选择/WebSocket 心跳等大批功能，`--profile web` 启动方式未变）。改 `bundle-dsh.mjs` 的 `DEFAULT_DSH_VERSION` + 删旧 `resources/dsh-bundle` 重跑 `npm run dsh:bundle`。WSL 后端经 `resolveDshTarget` 自动跟随。
+- **文件桥下架**：仪表盘「文件桥」tab 暂时屏蔽——`Dashboard.tsx` 顶部 `SHOW_FILE_BRIDGE = false` 开关，TABS 与挂载块同受控制（面板是常驻挂载，只藏 tab 仍会挂载/订阅）。preload / IPC / `fs-bridge.ts` 代码原样保留，恢复改回 `true` 即可；构建产物已验证无任何「文件桥」残留。
+- **体积瘦身**（win-unpacked 715MB → **612MB**，setup/portable 204.5MB → **175MB**）：
+  - `electron-builder.yml`：`electronLanguages: [zh-CN, en-US]`（locales 47MB→2MB）+ `compression: maximum`。
+  - 新增 `scripts/after-pack.cjs`（afterPack 钩子）：删 `dxcompiler.dll`/`dxil.dll`（WebGPU 着色器编译器，约 26MB，dsh Web UI 不用 WebGPU；vk_swiftshader 等软件渲染回退保留；LICENSES.chromium.html 因许可合规保留）。
+  - `download-node.mjs`：解压后裁 corepack / npm docs / npm man / CHANGELOG / README（约 4MB）。
+  - `download-pnpm.mjs`：裁 `artifacts/`（源码无引用，约 18MB）/ CHANGELOG。
+  - `bundle-dsh.mjs` prune 扩展：`*.pdb`（node-pty 4 个约 20MB）、node-pty 非 win32-x64 预编译目录（约 12MB）、third_party 的 win10-arm64 conpty（约 1MB）、不复制 pnpm-lock.yaml；win32-x64 的 conpty.dll/OpenConsole.exe/*.node 保留，verifyBundle 实际加载校验兜底。
+
 
 ## 0. 审查修复批次（2026-08-21，v0.3.1 前置）
 
@@ -200,6 +219,7 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 ### 4.5 dsh 本体
 - 启动：`node <dsh-bin> --profile web --port 3080`，`DSH_HOME` = dataDir/dsh-home。入口 `node_modules/@deepseek-ai/dsh/lib/bin.js`。
 - dsh API 走 **WebSocket `/api/rpc`**；REST `/api/*` 返回 404 是**预期行为**，不是 bug。
+- **Web UI 认证（dsh ≥ 0.1.2）**：launch token + 签名 cookie，详见 v0.3.4 批次说明与 `launch-url.ts` 头注释。裸地址 `GET /` 401、`GET /?token=` 303 + Set-Cookie；cookie 绑定 Host authority（改端口即失效，需新 token）。`dsh web` 把带 token 的 URL 打到 stdout / WSL 日志，这是外壳取 token 的唯一通道。
 - 查合成树：`DSH_HOME=... node lib/bin.js web --dump-config`。
 - 插件管理：`dsh plugin --profile web add <pkg|本地目录>`（转发 pnpm + 自动 reconcile bundles）。
 
@@ -229,7 +249,8 @@ v0.1.3 相对 v0.1.2 的改动（git 提交，按时间倒序）：
 - **备份原子性**：WSL 模式插件安装/卸载/回退 = 记录 wasRunning → stop → 快照（UNC cpSync，失败回退 `wsl cp -r`）→ 恢复原运行状态。
 - 状态原语（pidfile/kill -0/残留）**必须走 wsl.exe**（实时+权限正确），不用 UNC（9P 偶发 EPERM/延迟）。
 
-### 4.8 文件桥（v0.2.0，`fs-bridge.ts`）
+### 4.8 文件桥（v0.2.0，`fs-bridge.ts`；**v0.3.4 起入口下架**）
+- **下架状态**：仪表盘 tab 由 `Dashboard.tsx` 的 `SHOW_FILE_BRIDGE = false` 屏蔽（TABS 与挂载块同受控），preload/IPC/fs-bridge 代码原样保留，改回 `true` 即恢复。以下机制在下架期间不生效但依然有效。
 - 双端浏览（win 原生 / wsl 经 UNC），路径在 IPC 中始终 Linux 形态；UNC 只由 `toUnc` 构造（不信任渲染层拼接）。
 - **可中断流式复制**：64KB 块 + 背压；目标写 `<name>.dshpart`，成功 rename 落名（冲突默认拒绝/可覆盖）；取消/失败 destroy 流 + 删 .dshpart（**不残留半成品**）。`rs.destroy()` 无参不触发 error 事件——取消靠 data 轮询 flag（已实现）。
 - 并发上限 2，其余排队（进度事件含 queued）；同侧移动优先 `fs.rename`（EXDEV 回退复制+删源）。
@@ -249,7 +270,7 @@ npm run pack:win     # 完整打包：icon → 下载 node/pnpm → 打包 dsh b
 
 发布（已在 v0.1.2/0.1.3 验证过）：
 1. `npm run pack:win` → 产出 setup.exe / portable.exe / win-unpacked/。
-2. 绿色版 zip：`rm -rf dist/DeepSeek\ Harness && cp -r dist/win-unpacked "dist/DeepSeek Harness"`，再用 `node_modules/electron-winstaller/vendor/7z.exe a -tzip -mx=1 "dist/DeepSeek Harness-0.1.x-win-x64.zip" "dist/DeepSeek Harness"`（zip 顶层含 `DeepSeek Harness\` 文件夹）。
+2. 绿色版 zip：`node_modules/electron-winstaller/vendor/7z-x64.exe a -tzip -mx=9 "dist/DeepSeek-Harness-<ver>-portable-win-x64.zip" "dist/win-unpacked"`（v0.3.4 起用 -mx=9；注意二进制名是 **7z-x64.exe**，文档旧写的 `7z.exe` 不存在；`tar -a -f *.zip` 打出来是纯存储不压缩，勿用）。
 3. `gh release create v0.1.x <三个产物> --title v0.1.x --notes-file <notes>`（gh 在 `/c/Program Files/GitHub CLI/gh.exe`）。
    - 自 v0.1.4 起（publish 已配置）多传 `dist/latest.yml`；应用内自更新走 API 直取安装包，不依赖它，但上传后可选切换 electron-updater。
 4. release notes 放本地 `release-notes-v*.md`（如 `D:\宣传稿\` 之类自定位置）。
@@ -257,6 +278,8 @@ npm run pack:win     # 完整打包：icon → 下载 node/pnpm → 打包 dsh b
 ---
 
 ## 6. 本机当前运行状态（交接时刻）
+
+- **用户日常部署（2026-09-05 确认）**：绿色版 `D:\some\DeepSeek.Harness-0.2.1-win-x64`（目录名仍带 0.2.1，实际已于 2026-09-05 原位升级为 0.3.4，data/ 1.9GB 未动；升级前的旧文件整目录移入 `D:\some\.dsh-upgrade-trash-20260905`，确认无误后可删）。data 内 dsh 已是 0.1.2-rc.1、后端 local、端口 3080。
 
 - **应用**：安装在系统盘 `Program Files (x86)` 下某目录（测试版），数据在 `%APPDATA%\dsh-desktop`（安装版语义，保持现状不迁移）。
 - **dsh 服务状态**：当前 **stopped**（无 node 进程、3080 无监听）。Electron 壳在跑（DeepSeek Harness.exe ×5 属正常）。
